@@ -61,8 +61,12 @@ final class MultiTalkViewModel {
     }
 
     func insertSpeakerTag(_ name: String) {
-        let tag = "{\(name)} "
-        script.append(tag)
+        // Each speaker tag goes on its own line — prepend a newline unless the
+        // script is empty or already ends with one. This matches how dialogue
+        // scripts normally read and parses cleanly through the script parser.
+        let needsLeadingNewline = !script.isEmpty && !script.hasSuffix("\n")
+        let prefix = needsLeadingNewline ? "\n" : ""
+        script.append("\(prefix){\(name)} ")
     }
 
     func insertPause(seconds: Double) {
