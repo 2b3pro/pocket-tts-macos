@@ -419,7 +419,8 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "Pocket-TTS macOS";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Pocket TTS uses the microphone to dictate your chat messages. All transcription happens on-device.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Pocket TTS uses the microphone to dictate your chat messages.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Pocket TTS uses on-device speech recognition to transcribe your dictated chat messages.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -468,7 +469,8 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "Pocket-TTS macOS";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Pocket TTS uses the microphone to dictate your chat messages. All transcription happens on-device.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Pocket TTS uses the microphone to dictate your chat messages.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Pocket TTS uses on-device speech recognition to transcribe your dictated chat messages.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

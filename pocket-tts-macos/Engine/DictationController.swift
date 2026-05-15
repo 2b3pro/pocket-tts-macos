@@ -2,30 +2,26 @@
 //  DictationController.swift
 //  pocket-tts-macos
 //
-//  Drives the Chat composer's mic-button dictation. Uses macOS 26's
-//  SpeechTranscriber / SpeechAnalyzer (fully on-device — no SFSpeechRecognizer,
-//  no "Speech data from this app will be sent to Apple…" boilerplate, and no
-//  separate speech-recognition entitlement on top of mic access).
+//  Drives the Chat composer's mic-button dictation via SFSpeechRecognizer
+//  + AVAudioEngine.
 //
-//  Lifecycle (driven by ChatViewModel):
-//    1. requestAuthorization() — async; resolves to .authorized once mic
-//       access is granted.
-//    2. start() — sets up a fresh AVAudioEngine input tap, a SpeechAnalyzer
-//       with a SpeechTranscriber module, and an AsyncStream<AnalyzerInput>
-//       that feeds mic buffers into the analyzer. Partial transcripts arrive
-//       via `onTranscript`.
-//    3. stop() — closes the input stream, tears down the audio tap; the
-//       analyzer flushes one last result before its task ends.
+//  History (in this same file's prior commits): an attempt to migrate to
+//  macOS 26's SpeechTranscriber / SpeechAnalyzer crashed at runtime even
+//  after the obvious entitlement was added. The sandbox-vs-daemon dance
+//  for the new framework needs more investigation than this session can
+//  do without being able to interactively debug on the target machine.
+//  Until that's resolved with verifiable tests, we ship the older
+//  SFSpeechRecognizer path — it's slightly worse UX (Apple's system prompt
+//  includes "Speech data from this app will be sent to Apple…") but it
+//  doesn't crash. The Apple prompt boilerplate can't be suppressed; the
+//  system controls it.
 
 import AVFoundation
 import Foundation
 import Speech
 
-@available(macOS 26.0, *)
 @MainActor
 final class DictationController {
-
-    // MARK: - State
 
     enum AuthState: Equatable {
         case notDetermined
@@ -39,49 +35,59 @@ final class DictationController {
         case notAuthorized
         case noMicrophone
         case audioEngineFailed(Error)
-        case analyzerSetupFailed(Error)
-        case localeUnsupported
+        case recognizerUnavailable
+        case recognitionFailed(Error)
 
         var description: String {
             switch self {
-            case .notAuthorized:               return "Microphone not authorized"
-            case .noMicrophone:                return "No microphone input available"
-            case .audioEngineFailed(let e):    return "Audio engine failed: \(e)"
-            case .analyzerSetupFailed(let e):  return "Speech analyzer failed: \(e)"
-            case .localeUnsupported:           return "Speech transcription unsupported for this locale"
+            case .notAuthorized:        return "Speech recognition not authorized"
+            case .noMicrophone:         return "No microphone input available"
+            case .audioEngineFailed(let e): return "Audio engine failed: \(e)"
+            case .recognizerUnavailable: return "Speech recognizer unavailable for this locale"
+            case .recognitionFailed(let e):  return "Recognition failed: \(e)"
             }
         }
     }
 
     private(set) var authState: AuthState = .notDetermined
 
-    /// Fired on each partial transcript update. Always invoked on the main actor.
     var onTranscript: ((String) -> Void)?
-    /// Fired on irrecoverable errors.
     var onError: ((DictationError) -> Void)?
 
-    // MARK: - Stored
-    // Audio engine is recreated per start() so the inputNode is freshly
-    // initialized after permission state changes. Reusing one engine across
-    // permission flips can leave inputFormat reporting zero rate/channels,
-    // tripping a precondition deep in CoreAudio on the audio thread.
-    private let locale: Locale
+    /// Audio engine recreated per start() so inputNode is freshly initialized
+    /// after permission state changes. Reusing across permission flips can
+    /// leave inputFormat reporting zero rate/channels, tripping a CoreAudio
+    /// precondition (EXC_BREAKPOINT on the audio thread) inside installTap.
     private var audioEngine: AVAudioEngine?
-    private var analyzer: SpeechAnalyzer?
-    private var transcriber: SpeechTranscriber?
-    private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
-    private var resultsTask: Task<Void, Never>?
-    private var analyzerTask: Task<Void, Never>?
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var task: SFSpeechRecognitionTask?
+    private let recognizer: SFSpeechRecognizer?
 
     init(locale: Locale = .init(identifier: "en-US")) {
-        self.locale = locale
+        self.recognizer = SFSpeechRecognizer(locale: locale)
     }
 
     // MARK: - Authorization
 
     func requestAuthorization() async {
-        // SpeechTranscriber runs locally — only the microphone permission
-        // matters. No separate speech-recognition prompt.
+        if recognizer == nil {
+            authState = .unavailable("Speech recognizer not available for this locale")
+            return
+        }
+
+        // Speech recognition permission.
+        let speechStatus: SFSpeechRecognizerAuthorizationStatus = await withCheckedContinuation { cont in
+            SFSpeechRecognizer.requestAuthorization { status in cont.resume(returning: status) }
+        }
+        switch speechStatus {
+        case .notDetermined: authState = .notDetermined; return
+        case .denied:        authState = .denied; return
+        case .restricted:    authState = .restricted; return
+        case .authorized:    break
+        @unknown default:    authState = .unavailable("unknown speech auth state"); return
+        }
+
+        // Microphone permission.
         let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         switch micStatus {
         case .authorized:
@@ -94,7 +100,7 @@ final class DictationController {
         case .restricted:
             authState = .restricted
         @unknown default:
-            authState = .unavailable("unknown mic authorization state")
+            authState = .unavailable("unknown mic auth state")
         }
     }
 
@@ -102,11 +108,13 @@ final class DictationController {
 
     func start() throws {
         guard case .authorized = authState else { throw DictationError.notAuthorized }
+        guard let recognizer, recognizer.isAvailable else {
+            throw DictationError.recognizerUnavailable
+        }
 
-        // Reset any prior run.
         teardown()
 
-        // Fresh engine each start — see note above.
+        // Fresh engine each start. See note on the audioEngine property.
         let engine = AVAudioEngine()
         self.audioEngine = engine
 
@@ -117,31 +125,21 @@ final class DictationController {
             throw DictationError.noMicrophone
         }
 
-        // Build the analyzer + transcriber pair.
-        let transcriber = SpeechTranscriber(
-            locale: locale,
-            transcriptionOptions: [],
-            reportingOptions: [.volatileResults],
-            attributeOptions: []
-        )
-        let analyzer = SpeechAnalyzer(modules: [transcriber])
-        self.transcriber = transcriber
-        self.analyzer = analyzer
+        let req = SFSpeechAudioBufferRecognitionRequest()
+        req.shouldReportPartialResults = true
+        // Note: NOT setting `requiresOnDeviceRecognition = true` here.
+        // Forcing on-device routes through `com.apple.audioanalyticsd`, which
+        // the sandbox blocks → audio-thread precondition crash
+        // ("'com.apple.security.exception.mach-lookup.global-name' doesn't
+        // contain 'com.apple.audioanalyticsd'"). The mach-lookup exception
+        // entitlement that ostensibly fixes this didn't take effect under our
+        // signing setup. Server-side recognition uses a different IPC path
+        // that's permitted out of the box. Trade-off: dictation audio goes
+        // to Apple for transcription (covered by NSSpeechRecognitionUsageDescription).
+        self.request = req
 
-        // Input plumbing: audio tap → AsyncStream<AnalyzerInput> → analyzer.
-        let (inputSeq, inputCont) = AsyncStream<AnalyzerInput>.makeStream(of: AnalyzerInput.self)
-        self.inputContinuation = inputCont
-
-        analyzerTask = Task { [weak self] in
-            do {
-                try await analyzer.start(inputSequence: inputSeq)
-            } catch {
-                Task { @MainActor in self?.onError?(.analyzerSetupFailed(error)) }
-            }
-        }
-
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-            inputCont.yield(AnalyzerInput(buffer: buffer))
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak req] buffer, _ in
+            req?.append(buffer)
         }
 
         engine.prepare()
@@ -149,36 +147,36 @@ final class DictationController {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
-            inputCont.finish()
+            self.request = nil
             self.audioEngine = nil
             throw DictationError.audioEngineFailed(error)
         }
 
-        // Stream results back to the caller.
-        resultsTask = Task { [weak self] in
-            do {
-                for try await result in transcriber.results {
-                    let text = String(result.text.characters)
-                    await MainActor.run { self?.onTranscript?(text) }
+        task = recognizer.recognitionTask(with: req) { [weak self] result, error in
+            guard let self else { return }
+            if let result {
+                let text = result.bestTranscription.formattedString
+                Task { @MainActor in self.onTranscript?(text) }
+            }
+            if let error {
+                let nsErr = error as NSError
+                // `kAFAssistantErrorDomain` 203 is what stop() induces; not a real error.
+                if !(nsErr.code == 203 && nsErr.domain == "kAFAssistantErrorDomain") {
+                    Task { @MainActor in self.onError?(.recognitionFailed(error)) }
                 }
-            } catch {
-                await MainActor.run { self?.onError?(.analyzerSetupFailed(error)) }
             }
         }
     }
 
-    /// Stop listening; allow the analyzer to flush one final result.
     func stop() {
-        inputContinuation?.finish()
-        inputContinuation = nil
         if let engine = audioEngine, engine.isRunning {
             engine.stop()
             engine.inputNode.removeTap(onBus: 0)
         }
-        // Let the results task drain naturally as the analyzer winds down.
+        request?.endAudio()
+        request = nil
     }
 
-    /// Hard cancel — discards any in-flight result.
     func cancel() {
         teardown()
     }
@@ -186,20 +184,15 @@ final class DictationController {
     // MARK: - Private
 
     private func teardown() {
-        inputContinuation?.finish()
-        inputContinuation = nil
-
-        if let engine = audioEngine, engine.isRunning {
-            engine.stop()
-            engine.inputNode.removeTap(onBus: 0)
+        task?.cancel()
+        task = nil
+        request = nil
+        if let engine = audioEngine {
+            if engine.isRunning {
+                engine.stop()
+                engine.inputNode.removeTap(onBus: 0)
+            }
         }
         audioEngine = nil
-
-        resultsTask?.cancel()
-        resultsTask = nil
-        analyzerTask?.cancel()
-        analyzerTask = nil
-        analyzer = nil
-        transcriber = nil
     }
 }

@@ -51,23 +51,23 @@ final class ChatViewModel {
     private var ttsTask: Task<Void, Never>?
     private var healthCheckTask: Task<Void, Never>?
 
-    /// Erased so this class doesn't itself need an `@available` guard.
-    /// On macOS 26+ this is a `DictationController`; otherwise nil and
-    /// `isDictationAvailable` returns false.
-    private var dictationControllerErased: AnyObject?
-
+    private let dictationController = DictationController()
     /// Text captured by the recognizer for the current listening cycle.
     /// Tracked separately from `draft` so we can detect the empty-stop case
     /// without clobbering anything the user typed before pressing the mic.
     private var dictationStartingDraft: String = ""
     private var dictationCapturedText: String = ""
 
-    var isDictationAvailable: Bool {
-        if #available(macOS 26.0, *) {
-            return dictationControllerErased is DictationController
-        }
-        return false
-    }
+    /// **Currently disabled.** Both the SFSpeechRecognizer path (on-device or
+    /// server-side) and the macOS 26 SpeechTranscriber path crash the audio
+    /// thread under our sandbox configuration with EXC_BREAKPOINT in a
+    /// CoreAudio / audioanalyticsd precondition. The crash isn't catchable
+    /// — it kills the host process — so the mic button must stay hidden
+    /// until the entitlement / signing dance is sorted out properly.
+    ///
+    /// Switch this to `true` (and watch ChatMicUITests.test_micButton_clickDoesNotCrashApp)
+    /// once dictation is verified working.
+    var isDictationAvailable: Bool { false }
 
     private static let fallbackURL = URL(string: "http://localhost:1234")!
 
@@ -77,9 +77,6 @@ final class ChatViewModel {
         self.player = player
         self.settings = settings
         self.client = LMStudioClient(baseURL: URL(string: settings.baseURL) ?? Self.fallbackURL)
-        if #available(macOS 26.0, *) {
-            self.dictationControllerErased = DictationController()
-        }
     }
 
     // MARK: - Lifecycle hooks
@@ -195,43 +192,36 @@ final class ChatViewModel {
     }
 
     // MARK: - Dictation
-    // Gated behind macOS 26 — uses SpeechTranscriber (on-device, no
-    // SFSpeechRecognizer / no "data sent to Apple" prompt). On older
-    // macOS, isDictationAvailable returns false and the view hides the mic
-    // button entirely.
 
-    /// The single tap handler for the mic button — drives the 3-state cycle.
+    /// The single tap handler for the mic button — drives the 3-state cycle:
+    ///   click 1 (idle → listening), click 2 (listening → ready or → idle if
+    ///   nothing recognized), click 3 (ready → submit).
     func dictationButtonTapped() {
-        guard #available(macOS 26.0, *),
-              let controller = dictationControllerErased as? DictationController
-        else { return }
-
         switch dictation {
         case .idle:
-            Task { await startDictation(controller: controller) }
+            Task { await startDictation() }
         case .listening:
-            stopDictation(controller: controller)
+            stopDictation()
         case .ready:
             dictation = .idle
             if canSendDraft { send() }
         case .unavailable:
-            Task { await startDictation(controller: controller) }
+            Task { await startDictation() }
         }
     }
 
-    @available(macOS 26.0, *)
-    private func startDictation(controller: DictationController) async {
-        if controller.authState != .authorized {
-            await controller.requestAuthorization()
+    private func startDictation() async {
+        if dictationController.authState != .authorized {
+            await dictationController.requestAuthorization()
         }
-        switch controller.authState {
+        switch dictationController.authState {
         case .authorized:
             break
         case .denied:
-            dictation = .unavailable("Microphone access denied. Enable in System Settings → Privacy & Security.")
+            dictation = .unavailable("Microphone or speech-recognition access denied. Enable in System Settings → Privacy & Security.")
             return
         case .restricted:
-            dictation = .unavailable("Microphone access is restricted on this device.")
+            dictation = .unavailable("Speech recognition is restricted on this device.")
             return
         case .notDetermined:
             dictation = .unavailable("Permission prompt was dismissed; click the mic again to retry.")
@@ -244,27 +234,26 @@ final class ChatViewModel {
         dictationStartingDraft = draft
         dictationCapturedText = ""
 
-        controller.onTranscript = { [weak self] partial in
+        dictationController.onTranscript = { [weak self] partial in
             guard let self else { return }
             self.dictationCapturedText = partial
             let separator = self.dictationStartingDraft.isEmpty || self.dictationStartingDraft.hasSuffix(" ") ? "" : " "
             self.draft = self.dictationStartingDraft + separator + partial
         }
-        controller.onError = { [weak self] err in
+        dictationController.onError = { [weak self] err in
             self?.dictation = .unavailable(String(describing: err))
         }
 
         do {
-            try controller.start()
+            try dictationController.start()
             dictation = .listening
         } catch {
             dictation = .unavailable(String(describing: error))
         }
     }
 
-    @available(macOS 26.0, *)
-    private func stopDictation(controller: DictationController) {
-        controller.stop()
+    private func stopDictation() {
+        dictationController.stop()
         let captured = dictationCapturedText.trimmingCharacters(in: .whitespacesAndNewlines)
         if captured.isEmpty {
             draft = dictationStartingDraft
