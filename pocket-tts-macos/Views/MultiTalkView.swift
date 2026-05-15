@@ -43,14 +43,17 @@ struct MultiTalkView: View {
                 }
                 .frame(width: Theme.sidebarWidth)
 
-                // Right: script editor
+                // Right: script editor (NSTextView-backed so the speaker
+                // tag + pause buttons can insert at the cursor instead of
+                // appending to the end of the buffer).
                 TextInput(
                     text: $viewModel.script,
                     label: "Script",
                     placeholder: "Use {SpeakerName} to tag speakers and [Xs] for pauses.\n\nExample:\n{Alice} Hello there!\n[1.5s]\n{Bob} Hi, Alice.",
                     disabled: viewModel.status.isWorking,
                     onPauseClick: { showPauseModal = true },
-                    accessibilityID: "multi.scriptEditor"
+                    accessibilityID: "multi.scriptEditor",
+                    editorBridge: viewModel.editorBridge
                 )
             }
             .padding(.horizontal, Theme.space6)

@@ -14,6 +14,12 @@ struct TextInput: View {
     var disabled: Bool = false
     var onPauseClick: (() -> Void)?
     var accessibilityID: String = "single.textInput"
+    /// Optional cursor-aware insertion bridge. When passed, the editor swaps
+    /// to an NSTextView-backed view so the view model can call
+    /// `bridge.insertAtCursor(...)` to drop tags / markers at the caret
+    /// rather than at end-of-buffer. Single Voice doesn't pass one (no
+    /// inline insertion needed there).
+    var editorBridge: TextEditorBridge?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.space3) {
@@ -51,14 +57,21 @@ struct TextInput: View {
                         .padding(.vertical, Theme.space3 + 4)
                         .allowsHitTesting(false)
                 }
-                TextEditor(text: $text)
-                    .font(Theme.fontSM)
-                    .foregroundStyle(Theme.textPrimary)
-                    .scrollContentBackground(.hidden)
-                    .padding(.horizontal, Theme.space4)
-                    .padding(.vertical, Theme.space3)
-                    .disabled(disabled)
-                    .accessibilityIdentifier(accessibilityID)
+                if let editorBridge {
+                    MacTextEditor(text: $text, isEditable: !disabled, bridge: editorBridge)
+                        .padding(.horizontal, Theme.space4 - 4)
+                        .padding(.vertical, Theme.space3 - 6)
+                        .accessibilityIdentifier(accessibilityID)
+                } else {
+                    TextEditor(text: $text)
+                        .font(Theme.fontSM)
+                        .foregroundStyle(Theme.textPrimary)
+                        .scrollContentBackground(.hidden)
+                        .padding(.horizontal, Theme.space4)
+                        .padding(.vertical, Theme.space3)
+                        .disabled(disabled)
+                        .accessibilityIdentifier(accessibilityID)
+                }
             }
             .frame(minHeight: Theme.textEditorMinHeight)
             .themeInputField()

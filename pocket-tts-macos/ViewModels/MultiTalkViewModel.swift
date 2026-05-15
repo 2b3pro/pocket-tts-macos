@@ -32,6 +32,11 @@ final class MultiTalkViewModel {
     private var modelContext: ModelContext?
     private var currentTask: Task<Void, Never>?
 
+    /// Cursor-aware bridge into the script editor. Insert speaker tags and
+    /// pause markers via this to land them at the caret. The view supplies
+    /// the actual NSTextView via `MacTextEditor`'s coordinator.
+    let editorBridge = TextEditorBridge()
+
     init(engine: TTSEngine, player: StreamingPlayer) {
         self.engine = engine
         self.player = player
@@ -61,16 +66,18 @@ final class MultiTalkViewModel {
     }
 
     func insertSpeakerTag(_ name: String) {
-        // Each speaker tag goes on its own line — prepend a newline unless the
-        // script is empty or already ends with one. This matches how dialogue
-        // scripts normally read and parses cleanly through the script parser.
-        let needsLeadingNewline = !script.isEmpty && !script.hasSuffix("\n")
-        let prefix = needsLeadingNewline ? "\n" : ""
-        script.append("\(prefix){\(name)} ")
+        // Speaker tags land on a fresh line by convention. The bridge inserts
+        // at the caret (or replaces the current selection); we still prepend a
+        // newline if the caret isn't already at start-of-line.
+        let snippet = "\n{\(name)} "
+        editorBridge.insertAtCursor(snippet) { [weak self] s in self?.script.append(s) }
     }
 
     func insertPause(seconds: Double) {
-        script.append("[\(String(format: "%.1f", seconds))s]")
+        // Inline at the caret — the user wants `[1.5s]` where they were
+        // typing, not appended to the end of the buffer.
+        let snippet = "[\(String(format: "%.1f", seconds))s]"
+        editorBridge.insertAtCursor(snippet) { [weak self] s in self?.script.append(s) }
     }
 
     // MARK: - Synthesis
