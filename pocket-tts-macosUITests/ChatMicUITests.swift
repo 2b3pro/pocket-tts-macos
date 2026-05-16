@@ -36,21 +36,21 @@ final class ChatMicUITests: XCTestCase {
 
     // MARK: - Mic regression
 
-    /// Currently dictation is disabled in production
-    /// (`ChatViewModel.isDictationAvailable == false`) because clicking the
-    /// mic button crashes the audio thread with an unrecoverable CoreAudio
-    /// precondition under our sandbox setup. The mic button must NOT be
-    /// visible in this state. When dictation is re-enabled, this test must
-    /// be updated to:
-    ///   1. Assert the mic button IS visible
-    ///   2. Click it
-    ///   3. Assert the app survives (the regression guard against the
-    ///      previous crash regressions)
+    /// Mic stays disabled in this commit (isDictationAvailable = false)
+    /// pending manual verification. When you flip the flag to true in
+    /// ChatViewModel, also flip the assertion below to assertTrue +
+    /// the click sequence (commented out for reference).
     func test_micButton_hiddenWhileDictationDisabled() {
         waitForReadyAndNavigateToChat()
         let mic = app.buttons["chat.composer.micButton"]
         XCTAssertFalse(mic.waitForExistence(timeout: 2),
-                       "Mic button is visible but dictation is disabled — re-enable in ChatViewModel.isDictationAvailable and update this test to verify the click doesn't crash.")
+                       "Mic button is visible but dictation is disabled — flip ChatViewModel.isDictationAvailable to true after manually verifying it doesn't crash, then update this test to verify the click survives.")
+        // Regression-guard form (use when dictation is re-enabled):
+        // XCTAssertTrue(mic.waitForExistence(timeout: 5))
+        // mic.click()
+        // Thread.sleep(forTimeInterval: 1.5)
+        // XCTAssertTrue(app.buttons["tab.chat"].waitForExistence(timeout: 5),
+        //               "App crashed after clicking the mic button")
     }
 
     // MARK: - LM Studio round-trip (opportunistic)
@@ -88,13 +88,17 @@ final class ChatMicUITests: XCTestCase {
         // by ID since the message ID is dynamic; instead, assert the composer
         // emptied (one of the side effects of send()) and the cancel button
         // appears (since status transitions to generating/speaking).
+        // The Cancel button appears once the LLM has streamed enough text
+        // for the first sentence to trigger TTS. Depending on the model
+        // size + first-token latency, that can take 15–25 s on first run.
+        // Wide timeout so this test isn't a flake on legitimate hits.
         let cancel = app.buttons["chat.composer.cancel"]
-        XCTAssertTrue(cancel.waitForExistence(timeout: 10),
+        XCTAssertTrue(cancel.waitForExistence(timeout: 45),
                       "Cancel button never appeared — message didn't reach LM Studio")
 
         // Wait for it to settle back to idle (cancel disappears).
         let cancelGone = NSPredicate(format: "exists == false")
         let exp = expectation(for: cancelGone, evaluatedWith: cancel)
-        wait(for: [exp], timeout: 30)
+        wait(for: [exp], timeout: 60)
     }
 }

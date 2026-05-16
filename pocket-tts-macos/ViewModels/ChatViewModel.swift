@@ -58,15 +58,16 @@ final class ChatViewModel {
     private var dictationStartingDraft: String = ""
     private var dictationCapturedText: String = ""
 
-    /// **Currently disabled.** Both the SFSpeechRecognizer path (on-device or
-    /// server-side) and the macOS 26 SpeechTranscriber path crash the audio
-    /// thread under our sandbox configuration with EXC_BREAKPOINT in a
-    /// CoreAudio / audioanalyticsd precondition. The crash isn't catchable
-    /// — it kills the host process — so the mic button must stay hidden
-    /// until the entitlement / signing dance is sorted out properly.
-    ///
-    /// Switch this to `true` (and watch ChatMicUITests.test_micButton_clickDoesNotCrashApp)
-    /// once dictation is verified working.
+    /// Default false — but the entitlements + format fix in this commit
+    /// are believed to address the crash:
+    ///   * Added `com.apple.security.device.microphone` (Sandbox key)
+    ///     alongside `audio-input` (Hardened Runtime key); both are needed.
+    ///   * Audio tap uses `outputFormat(forBus:0)` not `inputFormat(...)`
+    ///     per Apple's SpokenWord sample.
+    /// XCTest UI infrastructure couldn't be exercised reliably in this
+    /// session to verify ("automation mode timed out" — unrelated to our
+    /// code). To test manually: flip this to `true`, run the app from
+    /// Xcode, click the mic. If it doesn't crash, leave it true.
     var isDictationAvailable: Bool { false }
 
     private static let fallbackURL = URL(string: "http://localhost:1234")!

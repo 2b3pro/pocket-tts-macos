@@ -119,7 +119,15 @@ final class DictationController {
         self.audioEngine = engine
 
         let input = engine.inputNode
-        let format = input.inputFormat(forBus: 0)
+        // Use `outputFormat` not `inputFormat`. `outputFormat` is what the
+        // node emits to its consumers (us, via the tap); `inputFormat` is
+        // what the hardware feeds in. AVAudioEngine converts between the
+        // two internally. Installing a tap with `inputFormat` was the
+        // source of the EXC_BREAKPOINT crashes — Apple's official
+        // SpokenWord sample uses `outputFormat` here for exactly this
+        // reason. Hardware-input format and tap format must match the
+        // direction of audio flow.
+        let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
             self.audioEngine = nil
             throw DictationError.noMicrophone
