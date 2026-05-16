@@ -130,6 +130,7 @@ struct ContentView: View {
             case .chat:
                 ChatView(
                     viewModel: chatVM,
+                    player: appState.player!,
                     onOpenSettings: { appState.showsSettingsSheet = true },
                     onOpenInMultiTalk: { payload in appState.queueReuse(payload) }
                 )

@@ -40,6 +40,10 @@ final class ChatViewModel {
     var connectionState: ConnectionState = .checking
     var status: ChatStatus = .idle
     var dictation: DictationStatus = .idle
+    var viewMode: ViewMode = {
+        let saved = UserDefaults.standard.string(forKey: "chatViewMode")
+        return saved == "transcript" ? .transcript : .orb
+    }()
 
     // MARK: - Deps
     private let engine: TTSEngine
@@ -53,12 +57,9 @@ final class ChatViewModel {
     private var ttsTask: Task<Void, Never>?
     private var healthCheckTask: Task<Void, Never>?
 
-    private let dictationController = DictationController()
-    /// Text captured by the recognizer for the current listening cycle.
-    /// Tracked separately from `draft` so we can detect the empty-stop case
-    /// without clobbering anything the user typed before pressing the mic.
-    private var dictationStartingDraft: String = ""
-    private var dictationCapturedText: String = ""
+    let dictationController = DictationController()
+    var dictationStartingDraft: String = ""
+    var dictationCapturedText: String = ""
 
     /// The earlier "audioanalyticsd sandbox" hypothesis was a misread of an
     /// older crash log. Today's actual crash was a Swift 6 actor-isolation
@@ -191,83 +192,11 @@ final class ChatViewModel {
         }
     }
 
-    // MARK: - Dictation
+    // MARK: - View mode
 
-    /// The single tap handler for the mic button — drives the 3-state cycle:
-    ///   click 1 (idle → listening), click 2 (listening → ready or → idle if
-    ///   nothing recognized), click 3 (ready → submit).
-    func dictationButtonTapped() {
-        switch dictation {
-        case .idle:
-            Task { await startDictation() }
-        case .listening:
-            stopDictation()
-        case .ready:
-            dictation = .idle
-            if canSendDraft { send() }
-        case .unavailable:
-            Task { await startDictation() }
-        }
-    }
-
-    private func startDictation() async {
-        if dictationController.authState != .authorized {
-            await dictationController.requestAuthorization()
-        }
-        switch dictationController.authState {
-        case .authorized:
-            break
-        case .denied:
-            dictation = .unavailable("Microphone or speech-recognition access denied. Enable in System Settings → Privacy & Security.")
-            return
-        case .restricted:
-            dictation = .unavailable("Speech recognition is restricted on this device.")
-            return
-        case .notDetermined:
-            dictation = .unavailable("Permission prompt was dismissed; click the mic again to retry.")
-            return
-        case .unavailable(let msg):
-            dictation = .unavailable(msg)
-            return
-        }
-
-        dictationStartingDraft = draft
-        dictationCapturedText = ""
-
-        dictationController.onTranscript = { [weak self] partial in
-            guard let self else { return }
-            self.dictationCapturedText = partial
-            let separator = self.dictationStartingDraft.isEmpty || self.dictationStartingDraft.hasSuffix(" ") ? "" : " "
-            self.draft = self.dictationStartingDraft + separator + partial
-        }
-        dictationController.onError = { [weak self] err in
-            self?.dictation = .unavailable(String(describing: err))
-        }
-
-        do {
-            try dictationController.start()
-            dictation = .listening
-        } catch {
-            dictation = .unavailable(String(describing: error))
-        }
-    }
-
-    private func stopDictation() {
-        dictationController.stop()
-        let captured = dictationCapturedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if captured.isEmpty {
-            draft = dictationStartingDraft
-            dictation = .idle
-        } else {
-            dictation = .ready
-        }
-    }
-
-    private var canSendDraft: Bool {
-        if case .connected = connectionState {
-            return !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
-        return false
+    func toggleViewMode() {
+        viewMode = (viewMode == .orb) ? .transcript : .orb
+        UserDefaults.standard.set(viewMode.rawValue, forKey: "chatViewMode")
     }
 
     // MARK: - Transcript export

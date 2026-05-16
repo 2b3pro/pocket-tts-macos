@@ -33,6 +33,13 @@ struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - ViewMode
+
+enum ViewMode: String, Sendable {
+    case transcript
+    case orb
+}
+
 // MARK: - ChatSettings
 
 nonisolated struct ChatSettings: Codable, Equatable, Sendable {

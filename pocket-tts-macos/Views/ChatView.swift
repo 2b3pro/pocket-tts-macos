@@ -7,6 +7,7 @@ import SwiftUI
 
 struct ChatView: View {
     @Bindable var viewModel: ChatViewModel
+    let player: StreamingPlayer
     let onOpenSettings: () -> Void
     var onOpenInMultiTalk: ((PendingReuse) -> Void)?
 
@@ -14,7 +15,12 @@ struct ChatView: View {
         VStack(spacing: 0) {
             topBar
             Divider().background(Theme.borderColor)
-            transcript
+            if viewModel.viewMode == .orb {
+                OrbView(amplitudeSource: player.currentAmplitude)
+                    .background(Color.black)
+            } else {
+                transcript
+            }
             Divider().background(Theme.borderColor)
             composer
         }
@@ -44,6 +50,15 @@ struct ChatView: View {
             .buttonStyle(.plain)
             .disabled(!viewModel.canSaveTranscript)
             .help("Open in Multi-Talk")
+
+            Button(action: { viewModel.toggleViewMode() }) {
+                Image(systemName: viewModel.viewMode == .orb ? "list.bullet" : "circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            .buttonStyle(.plain)
+            .help(viewModel.viewMode == .orb ? "Show transcript" : "Show orb")
+            .accessibilityIdentifier("chat.viewModeToggle")
 
             Button(action: { Task { await viewModel.checkConnection() } }) {
                 Image(systemName: "arrow.clockwise")

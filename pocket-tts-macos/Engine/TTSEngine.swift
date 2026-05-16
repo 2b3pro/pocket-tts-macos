@@ -5,6 +5,7 @@
 
 import CoreML
 import Foundation
+import NaturalLanguage
 
 // MARK: - PCMFrame
 /// 80 ms of mono PCM @ 24 kHz (1920 samples). The unit Mimi emits per
@@ -134,6 +135,20 @@ actor TTSEngine {
             throw TTSEngineError.voiceNotFound(voiceID)
         }
 
+        // Split text into chunks that fit the 128-token limit. Short text
+        // (the common case) passes through as a single chunk.
+        let chunks = splitForTokenLimit(text)
+        for chunk in chunks {
+            try runSynthesisChunk(text: chunk, voice: voice, options: options, continuation: continuation)
+        }
+    }
+
+    private func runSynthesisChunk(
+        text: String,
+        voice: LoadedVoice,
+        options: SynthesisOptions,
+        continuation: AsyncStream<PCMFrame>.Continuation
+    ) throws {
         // 1) Tokenize.
         let (tokens, textLen) = try tokenizer.encode(text, paddedLength: Self.tTextMax)
         guard textLen <= Self.tTextMax else {
@@ -196,6 +211,47 @@ actor TTSEngine {
             format: "TTSEngine: produced %d frames, %.2fs audio in %.2fs (%.1f fps; real-time = 12.5 fps)\n",
             produced, audioSec, elapsed, fps
         ).utf8))
+    }
+
+    // MARK: - Text splitting
+
+    /// Split `text` into chunks that each fit within the 128-token limit.
+    /// Short text returns as a single-element array (fast path).
+    private func splitForTokenLimit(_ text: String) -> [String] {
+        if fitsInTokenLimit(text) { return [text] }
+
+        let sentences = Self.splitIntoSentences(text)
+
+        // Greedily pack consecutive sentences into the largest chunks that fit.
+        var chunks: [String] = []
+        var current = ""
+        for sentence in sentences {
+            let candidate = current.isEmpty ? sentence : current + " " + sentence
+            if fitsInTokenLimit(candidate) {
+                current = candidate
+            } else {
+                if !current.isEmpty { chunks.append(current) }
+                current = sentence
+            }
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks.isEmpty ? [text] : chunks
+    }
+
+    private func fitsInTokenLimit(_ text: String) -> Bool {
+        (try? tokenizer.encode(text, paddedLength: Self.tTextMax)) != nil
+    }
+
+    private static func splitIntoSentences(_ text: String) -> [String] {
+        let tok = NLTokenizer(unit: .sentence)
+        tok.string = text
+        var result: [String] = []
+        tok.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            let s = String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !s.isEmpty { result.append(s) }
+            return true
+        }
+        return result.isEmpty ? [text] : result
     }
 
     // MARK: - State seeding

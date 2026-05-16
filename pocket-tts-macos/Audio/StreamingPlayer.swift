@@ -5,6 +5,7 @@
 
 import AVFoundation
 import Foundation
+import Synchronization
 
 // MARK: - StreamingPlayer
 // Progressive playback of an AsyncStream<PCMFrame> through AVAudioEngine.
@@ -40,6 +41,8 @@ actor StreamingPlayer {
     }
 
     // MARK: - Stored state
+    let currentAmplitude = AmplitudeRef(0)
+
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
     private let format: AVAudioFormat
@@ -96,6 +99,12 @@ actor StreamingPlayer {
             if isStopped { throw PlayerError.stopped }
 
             let buf = try makeBuffer(samples: frame.samples)
+
+            var sumSq: Float = 0
+            for s in frame.samples { sumSq += s * s }
+            let rms = (sumSq / Float(frame.samples.count)).squareRoot()
+            currentAmplitude.atomic.store(min(rms * 4.0, 1.0), ordering: .relaxed)
+
             if frame.isFinal {
                 sawFinalFlag = true
                 scheduleWithDrainCallback(buf)
@@ -126,12 +135,14 @@ actor StreamingPlayer {
                 drainContinuation = cont
             }
         }
+        currentAmplitude.atomic.store(0, ordering: .relaxed)
     }
 
     /// Hard stop: halts player + engine and unblocks any in-flight `play()`.
     /// A subsequent `play()` call will restart the engine.
     func stop() {
         isStopped = true
+        currentAmplitude.atomic.store(0, ordering: .relaxed)
         if playerNode.isPlaying { playerNode.stop() }
         if engine.isRunning { engine.stop() }
 
