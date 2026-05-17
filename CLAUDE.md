@@ -10,79 +10,6 @@ Single-shot context for any Claude Code session working in this repo. Read first
 
 **pocket-tts-macos** is a native Swift / SwiftUI macOS app that replaces the existing Electron-based pocket-tts frontend with a fully on-device, Python-free TTS application. It runs the Kyutai pocket-tts model end-to-end via Core ML `.mlpackage` artifacts (CaLM + Mimi codec), with no Python server, no PyInstaller bundle, and no network dependency for synthesis.
 
-- **Bundle ID:** `com.slaughtersj.pocket-tts-macos`
-- **Min deployment target:** **macOS 15** (Core ML stateful models require it)
-- **Lifecycle:** SwiftUI App
-- **Swift version:** 6 (Xcode 16+)
-- **Concurrency:** Swift Concurrency throughout — no GCD / DispatchQueue unless interfacing with AVAudioEngine taps
-- **Architecture targets:** Apple Silicon primary; Intel build acceptable but not optimized
-- **iOS variant:** **possibly later** — design engine layer platform-agnostic, but no `#if os(iOS)` work in v1
-- **License-relevant:** uses the ungated **pocket-tts-without-voice-cloning** model variant for v1. Voice cloning (gated checkpoint) is v2+.
-
----
-
-## Current Status
-
-**Phase −1 (project bootstrap) — in progress.** See `pocket-tts-macos/road-map.md` for the full phased plan.
-
-What exists today (2026-05-15):
-
-- Xcode project created, default `pocket_tts_macosApp.swift` + `ContentView.swift` + `Item.swift` templates only
-- Git initialized + GitHub remote
-- `road-map.md` checked in at `pocket-tts-macos/road-map.md`
-- **Nothing else yet** — engine, UI, assets, dependencies all pending
-
----
-
-## Source-of-truth file paths
-
-### External reference projects (READ-ONLY — do not modify)
-
-| Path | What it is | Why we look at it |
-|------|------------|-------------------|
-| `/Users/system-backup/dev_local/pocket-tts/` | Original Python pocket-tts repo | Ground-truth model implementation; reference for engine semantics |
-| `/Users/system-backup/dev_local/pocket-tts-core-ml-conversion/` | Conversion project that produced our `.mlpackage`s | Source of artifacts + numerical validators + working Swift harness |
-
-**Specifically useful files in those projects:**
-
-- `pocket-tts/pocket_tts/models/tts_model.py` — `TTSModel` orchestration (autoregressive loop, KV cache slicing, decoder thread)
-- `pocket-tts/pocket_tts/models/flow_lm.py` — `FlowLMModel`, LSD flow head
-- `pocket-tts/pocket_tts/config/b6369a24.yaml` — full model hyperparameters
-- `pocket-tts/electron/src/renderer/components/*.tsx` — the 16 React components to port (visual reference only — re-implement in SwiftUI)
-- `pocket-tts/electron/src/renderer/lib/streaming-wav-player.ts` — progressive playback reference for `StreamingPlayer.swift`
-- `pocket-tts/electron/src/main/llm-handler.ts` — LM Studio integration reference
-- `pocket-tts/macos-service/PocketTTSMenuBar/Sources/PocketTTSMenuBar/Models/{Voice,Config}.swift` — **port these**; adapt namespaces
-- `pocket-tts-core-ml-conversion/NOTES.md` — Core ML conversion gotchas (RoPE bug, fp16-only StateType, slice_update behavior). Re-read before touching the engine.
-- `pocket-tts-core-ml-conversion/swift_harness/Sources/PocketTTSHarness/main.swift` — working Swift CLI that loads `calm_stateful` + `mimi_stateful`, runs the loop with seeded KV cache, writes WAV. **Mine this for the engine implementation.**
-- `pocket-tts-core-ml-conversion/scripts/03_convert_calm_stateful.py` — Stage 3 converter; pattern to copy for `prompt_phase.mlpackage`
-
-### Core ML artifacts (already converted, validated against PyTorch reference)
-
-Located at `/Users/system-backup/dev_local/pocket-tts-core-ml-conversion/mlpackages/`:
-
-| File | Size | Role in pipeline |
-|------|-----:|------------------|
-| `calm_stateful.mlpackage` | 162 MB fp16 | Autoregressive single-step decoder; 12 `ct.StateType` KV buffers; called once per 80 ms frame |
-| `mimi_stateful.mlpackage` | 20 MB fp16 | Streaming Mimi decoder; converts one latent frame → 1920 PCM samples |
-| `prompt_phase.mlpackage` | **140 MB fp16** | Text-encoding prompt: takes padded SentencePiece tokens + voice_offset + text_length → writes positions `voice_offset..voice_offset+T_TEXT_MAX` into the 12 KV state buffers. `T_TEXT_MAX = 128`. **Built and numerically validated** (1.84% worst K rel-err vs PyTorch). |
-| `calm_step.mlpackage` | 325 MB fp32 | Stateless dev artifact (KV passed in/out). Keep around for debugging, do **not** bundle. |
-| `mimi_decoder.mlpackage` | 39 MB fp32 | Stateless dev artifact. Do **not** bundle. |
-
-### Model assets (also bundle inside the app)
-
-- **Tokenizer:** `~/.cache/huggingface/hub/models--kyutai--pocket-tts-without-voice-cloning/snapshots/<hash>/tokenizer.model` — SentencePiece BPE
-- **Voice KV state (precomputed):** `/Users/system-backup/dev_local/pocket-tts-core-ml-conversion/voice_kv_states/*.safetensors` — **bundle these, not the raw embeddings**
-  - One file per voice: `alba.safetensors`, `azelma.safetensors`, `cosette.safetensors`, `fantine.safetensors`, `javert.safetensors`, `jean.safetensors`, `marius.safetensors`
-  - Each file: 12 fp16 tensors (`kv_k_0..kv_k_5`, `kv_v_0..kv_v_5`) of shape `[1, 512, 16, 64]`, zero-padded beyond `T_voice`
-  - Per-file size: ~12 MB. Total for 7 voices: ~84 MB
-  - JSON metadata in each file's safetensors header carries `T_voice`, `n_layers`, `n_heads`, `d_head`, `max_seq`, `dtype` — Swift reads `T_voice` from metadata to know where to start writing in `prompt_phase`
-  - Swift loads these directly via `MLState.write_state(name, fp32_view)` — coremltools' Python API requires fp32 input, but the Swift API accepts the native fp16 directly via `MLState.withMultiArray`
-
-**Bundle size budget (Phase 0 artifacts):**
-- 3 × `.mlpackage` (prompt_phase 140 + calm_stateful 162 + mimi_stateful 20) = ~320 MB
-- 7 × voice KV files = ~84 MB
-- Tokenizer + assets = ~5 MB
-- **Total: ~410 MB** (revised up from initial ~250 MB estimate — note for App Store size warnings)
 
 ---
 
@@ -188,30 +115,6 @@ pocket-tts-macos/
 
 ---
 
-## Common commands
-
-```bash
-# Build (CLI — uses xcode-builder-agent to avoid miniforge linker contamination)
-xcodebuild -project pocket-tts-macos.xcodeproj -scheme pocket-tts-macos -configuration Debug build
-
-# Test
-xcodebuild -project pocket-tts-macos.xcodeproj -scheme pocket-tts-macos test
-
-# Re-run Core ML numerical validators (in the conversion project, after touching the engine)
-cd /Users/system-backup/dev_local/pocket-tts-core-ml-conversion
-source .venv/bin/activate
-python scripts/validate_stage3.py    # PASS expected
-python scripts/e2e_python.py         # writes out/out_coreml.wav
-
-# Generate prompt_phase.mlpackage (Phase 0)
-cd /Users/system-backup/dev_local/pocket-tts-core-ml-conversion
-source .venv/bin/activate
-python scripts/05_convert_prompt_phase.py   # to be written
-```
-
-**⚠️ Xcode build warning:** Do NOT use bare `swift build` or `xcodebuild` if miniforge/conda is on PATH — it contaminates the linker. Either use the `xcode-builder-agent` subagent or run `env -i PATH=/usr/bin:/bin xcodebuild ...` for a clean shell.
-
----
 
 ## Conventions
 
@@ -231,7 +134,7 @@ python scripts/05_convert_prompt_phase.py   # to be written
 - If Xcode generated `pocket_tts_macosTests.swift` using Swift Testing (`import Testing`, `@Test` funcs), **rewrite it to XCTest** (`import XCTest`, `final class … : XCTestCase`, `func testFoo()`) on first touch
 - Engine-layer tests (`TTSEngine`, `Tokenizer`, `VoiceLoader`) belong in unit tests; visible-flow tests (text → audio plays) belong in UI tests
 
-### SwiftData persistence (Phase 3 onward)
+### SwiftData persistence
 
 Strict 10-step pattern from `~/.claude/CLAUDE.md`:
 
@@ -296,12 +199,12 @@ Quick status:
 - [x] Phase −1: project bootstrap (Xcode project, git, GitHub remote, road-map, CLAUDE.md)
 - [x] Phase 0a — voice KV state precompute: 7 voices exported to `/Users/system-backup/dev_local/pocket-tts-core-ml-conversion/voice_kv_states/*.safetensors` (T_voice 125–161 per voice)
 - [x] Phase 0b — `prompt_phase.mlpackage` converted, 140 MB, validated against PyTorch at 1.84% worst K rel-err (passing 5% threshold). Notable: ANE compile rejects multi-position SDPA; runs CPU+GPU
-- [ ] Phase 0c — Swift engine: Tokenizer, VoiceLoader, TTSEngine + Xcode project scaffolding
-- [ ] Phase 0d — end-to-end Swift unit test (text → wav, no Python)
-- [ ] Phase 1: streaming audio (StreamingPlayer, WAVEncoder, AAC/MP3 encoder)
-- [ ] Phase 2: MVP SwiftUI shell (single-voice mode → v0.1 shippable)
-- [ ] Phase 3: MultiTalk + History (SwiftData)
-- [ ] Phase 4: LM Studio chat
-- [ ] Phase 5: Orb (Metal shader port)
+- [x] Phase 0c — Swift engine: Tokenizer, VoiceLoader, TTSEngine + Xcode project scaffolding
+- [x] Phase 0d — end-to-end Swift unit test (text → wav, no Python)
+- [x] Phase 1: streaming audio (StreamingPlayer, WAVEncoder, AAC/MP3 encoder)
+- [x] Phase 2: MVP SwiftUI shell (single-voice mode → v0.1 shippable)
+- [x] Phase 3: MultiTalk + History (SwiftData)
+- [x] Phase 4: LM Studio chat
+- [x] Phase 5: Orb (Metal shader port)
 - [ ] Phase 6: polish, signing, notarization, Sparkle, DMG
 - [ ] Deferred v2: voice cloning, EnhancementStudio, AudioCompare, iOS variant
