@@ -80,6 +80,16 @@ final class MultiTalkViewModel {
         editorBridge.insertAtCursor(snippet) { [weak self] s in self?.script.append(s) }
     }
 
+    // MARK: - AI generation support
+
+    func applySpeakersFromGeneration(names: [String], voices: [Voice]) {
+        guard !names.isEmpty else { return }
+        let voiceIDs = voices.map(\.id)
+        speakers = names.enumerated().map { i, name in
+            MultiTalkSpeaker(name: name, voiceID: voiceIDs[i % voiceIDs.count])
+        }
+    }
+
     // MARK: - Synthesis
 
     func synthesize() {

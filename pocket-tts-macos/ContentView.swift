@@ -113,13 +113,15 @@ struct ContentView: View {
                 SingleVoiceView(
                     viewModel: singleVM,
                     voices: voices,
-                    pendingReuse: $appState.pendingReuse
+                    pendingReuse: $appState.pendingReuse,
+                    chatSettings: $appState.chatSettings
                 )
             case .multi:
                 MultiTalkView(
                     viewModel: multiVM,
                     voices: voices,
-                    pendingReuse: $appState.pendingReuse
+                    pendingReuse: $appState.pendingReuse,
+                    chatSettings: $appState.chatSettings
                 )
             case .history:
                 HistoryView(

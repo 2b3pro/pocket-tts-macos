@@ -14,7 +14,10 @@ struct MultiTalkView: View {
     @Binding var pendingReuse: PendingReuse?
     @Environment(\.modelContext) private var modelContext
 
+    @Binding var chatSettings: ChatSettings
+
     @State private var showPauseModal = false
+    @State private var showGenerator = false
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -51,6 +54,7 @@ struct MultiTalkView: View {
                     label: "Script",
                     placeholder: "Use {SpeakerName} to tag speakers and [Xs] for pauses.\n\nExample:\n{Alice} Hello there!\n[1.5s]\n{Bob} Hi, Alice.",
                     disabled: viewModel.status.isWorking,
+                    onGenerateClick: { showGenerator = true },
                     onPauseClick: { showPauseModal = true },
                     accessibilityID: "multi.scriptEditor",
                     editorBridge: viewModel.editorBridge
@@ -63,6 +67,18 @@ struct MultiTalkView: View {
                 PauseModal(
                     isPresented: $showPauseModal,
                     onInsert: { dur in viewModel.insertPause(seconds: dur) }
+                )
+            }
+
+            if showGenerator {
+                ScriptGeneratorModal(
+                    isPresented: $showGenerator,
+                    mode: .multiTalk,
+                    chatSettings: $chatSettings,
+                    onAccept: { script, speakerNames in
+                        viewModel.script = script
+                        viewModel.applySpeakersFromGeneration(names: speakerNames, voices: voices)
+                    }
                 )
             }
         }
