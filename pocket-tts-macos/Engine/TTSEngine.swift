@@ -135,9 +135,8 @@ actor TTSEngine {
             throw TTSEngineError.voiceNotFound(voiceID)
         }
 
-        // Split text into chunks that fit the 128-token limit. Short text
-        // (the common case) passes through as a single chunk.
-        let chunks = splitForTokenLimit(text)
+        let normalized = TextNormalizer.normalize(text)
+        let chunks = splitForTokenLimit(normalized)
         for chunk in chunks {
             try runSynthesisChunk(text: chunk, voice: voice, options: options, continuation: continuation)
         }
