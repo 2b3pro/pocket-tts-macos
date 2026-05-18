@@ -44,8 +44,10 @@ The Voice Manager (waveform icon in the app header) is the canonical place to im
 WAV → [LavaSR enhancement (optional)] → [Fish DAC encode] + [MimiEncoder → voice_prompt_phase → KV safetensors]
 ```
 
-- **LavaSR Enhancement** — MLX-native port of the Vocos BWE model with precomputed mel filterbank. Denoise toggle and RMS target level (-30 to -6 dB) configurable per voice.
-- **Enhancement Studio** — A/B comparison (Play original vs enhanced), Accept & Save / Reject / Re-enhance flow.
+- **LavaSR Enhancement** — MLX-native port of the Vocos BWE (bandwidth extension) model. Uses a custom ISTFT head matching the Python Vocos pipeline exactly: periodic Hann window, window-squared overlap-add normalization, and "same" padding. Best suited for noisy or low-quality recordings — clean studio audio may sound worse after enhancement due to inherent model artifacts.
+- **RMS Normalization** — All imported voices are automatically RMS-normalized to -16 dB at import time, ensuring consistent volume for encoding regardless of whether enhancement is applied.
+- **Enhancement Studio** — A/B comparison (Play original vs enhanced), Accept & Save / Reject / Re-enhance flow. Denoise toggle and RMS target level (-30 to -6 dB) configurable per voice.
+- **Mono preconditioning** — Stereo or non-44.1kHz WAVs are automatically converted to mono 44.1kHz at import time for consistent downstream processing.
 - **Memory management** — All import models (MimiEncoder, LavaSR, voice_prompt_phase) unload after encoding. Fish engine unloads when switching to Pocket-TTS. MLX GPU cache cleared on unload.
 
 ## AI Script Writer

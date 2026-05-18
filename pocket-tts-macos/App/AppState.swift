@@ -62,6 +62,9 @@ final class AppState {
     /// Voice Manager sheet visibility.
     var showsVoiceManager: Bool = false
 
+    /// Toast notification shown when a voice finishes encoding.
+    var toastMessage: String?
+
     /// LM Studio chat settings. Persisted via UserDefaults; loaded once at init.
     var chatSettings: ChatSettings
 

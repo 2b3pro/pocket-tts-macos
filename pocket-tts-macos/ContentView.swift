@@ -126,6 +126,8 @@ struct ContentView: View {
                         if appState.chatSettings.activeBackend != .fishSpeech {
                             await appState.fishEngine?.unload()
                         }
+                        let voiceName = FishVoiceManager.shared.voice(for: voiceID)?.name ?? "Voice"
+                        showVoiceReadyToast(voiceName)
                         print("[ContentView] import pipeline complete, memory released")
                     }
                 },
@@ -181,11 +183,21 @@ struct ContentView: View {
                         if appState.chatSettings.activeBackend != .fishSpeech {
                             await appState.fishEngine?.unload()
                         }
+                        let voiceName = FishVoiceManager.shared.voice(for: voiceID)?.name ?? "Voice"
+                        showVoiceReadyToast(voiceName)
                         print("[ContentView] import pipeline complete, memory released")
                     }
                 }
             )
         }
+        .overlay(alignment: .top) {
+            if let message = appState.toastMessage {
+                toastBanner(message)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .padding(.top, Theme.space4)
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: appState.toastMessage)
     }
 
     // MARK: - Header (drag region + title)
@@ -309,6 +321,31 @@ struct ContentView: View {
         voices = ids.map { id in
             let type = Voice.voiceType(forID: id)
             return type == .predefined ? Voice(predefined: id) : Voice(custom: id)
+        }
+    }
+
+    // MARK: - Toast
+
+    private func toastBanner(_ message: String) -> some View {
+        HStack(spacing: Theme.space2) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(Theme.successFG)
+            Text(message)
+                .font(Theme.fontSM)
+                .foregroundStyle(Theme.textPrimary)
+        }
+        .padding(.horizontal, Theme.space4)
+        .padding(.vertical, Theme.space3)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.radius))
+        .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
+    }
+
+    private func showVoiceReadyToast(_ name: String) {
+        appState.toastMessage = "\"\(name)\" is ready for synthesis"
+        Task {
+            try? await Task.sleep(for: .seconds(4))
+            appState.toastMessage = nil
         }
     }
 }
