@@ -181,7 +181,7 @@ struct VoiceManagerView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Enhance with LavaSR")
                         .font(Theme.fontXS)
-                    Text("Opens Enhancement Studio after saving to preview audio improvements")
+                    Text("Best for noisy or low-quality recordings. May introduce artifacts on clean audio.")
                         .font(.system(size: 10))
                         .foregroundStyle(Theme.textSecondary)
                 }
@@ -207,6 +207,18 @@ struct VoiceManagerView: View {
                 Text("Enhancement Settings")
                     .font(Theme.fontSMBold)
                     .foregroundStyle(Theme.textPrimary)
+
+                HStack(spacing: Theme.space2) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.accent)
+                    Text("LavaSR bandwidth extension works best on noisy or low-quality recordings. Clean studio audio may sound worse after enhancement.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                .padding(Theme.space2)
+                .background(Theme.accent.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: Theme.radius))
 
                 Toggle(isOn: $enableDenoise) {
                     Text("Denoise")

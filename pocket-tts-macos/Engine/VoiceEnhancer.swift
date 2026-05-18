@@ -63,24 +63,19 @@ final class VoiceEnhancer {
 
         status = .enhancing
 
-        // Load audio
-        let samples = try Self.loadAudio(url: inputURL, targetRate: 48000)
-        print("[VoiceEnhancer] loaded \(samples.count) samples @ 48kHz")
+        let samples = try Self.loadAudio(url: inputURL, targetRate: LavaSREnhancer.sampleRate)
+        print("[VoiceEnhancer] loaded \(samples.count) samples @ \(LavaSREnhancer.sampleRate)Hz")
 
-        // Run Vocos BWE
         let enhanced = try model.enhance(MLXArray(samples))
         eval(enhanced)
 
         let output = enhanced.asArray(Float.self)
         print("[VoiceEnhancer] enhanced → \(output.count) samples")
 
-        // RMS normalize to -16 dB
         let normalized = Self.rmsNormalize(output, targetDB: -16.0)
 
-        // Write output WAV
-        try Self.writeWAV(samples: normalized, sampleRate: 48000, url: outputURL)
+        try Self.writeWAV(samples: normalized, sampleRate: LavaSREnhancer.sampleRate, url: outputURL)
 
-        // Release model from memory — enhancement is a one-shot per import
         self.model = nil
         status = .idle
         MLX.Memory.clearCache()
@@ -158,21 +153,127 @@ final class VoiceEnhancer {
     }
 }
 
+// MARK: - LavaSR ISTFT Head
+
+/// Custom ISTFT head matching Python Vocos exactly:
+/// - Periodic Hann window (divisor N, not N-1)
+/// - Window-squared normalization for overlap-add
+/// - "same" padding trim: (winLength - hopLength) / 2
+private class LavaSRISTFTHead: Module {
+    nonisolated let nFft: Int
+    nonisolated let hopLength: Int
+    nonisolated(unsafe) let out: Linear
+
+    nonisolated override init() {
+        self.nFft = 2048
+        self.hopLength = 512
+        self.out = Linear(512, 2048 + 2)
+        super.init()
+    }
+
+    nonisolated init(dim: Int, nFft: Int, hopLength: Int) {
+        self.nFft = nFft
+        self.hopLength = hopLength
+        self.out = Linear(dim, nFft + 2)
+        super.init()
+    }
+
+    func callAsFunction(_ x: MLXArray) -> MLXArray {
+        var h = out(x)
+        h = h.swappedAxes(1, 2)
+
+        let halfSize = (nFft + 2) / 2
+        let mag = exp(h[0..., 0..<halfSize, 0...])
+        let clippedMag = clip(mag, max: MLXArray(Float(1e2)))
+        let phase = h[0..., halfSize..., 0...]
+
+        let stftReal = clippedMag * cos(phase)
+        let stftImag = clippedMag * sin(phase)
+
+        return performISTFT(real: stftReal, imag: stftImag)
+    }
+
+    // MARK: - ISTFT (matching Python Vocos spectral_ops.ISTFT with padding="same")
+
+    private func performISTFT(real: MLXArray, imag: MLXArray) -> MLXArray {
+        let batchSize = real.shape[0]
+        let numFrames = real.shape[2]
+
+        // Periodic Hann window — matches torch.hann_window(N) which uses divisor N
+        let window = periodicHannWindow(length: nFft)
+        let windowSq = window.asArray(Float.self).map { $0 * $0 }
+
+        let outputLength = (numFrames - 1) * hopLength + nFft
+
+        var outputs: [MLXArray] = []
+        for b in 0..<batchSize {
+            let realB = real[b]
+            let imagB = imag[b]
+            let complexSpec = realB + MLXArray(real: Float(0), imaginary: Float(1)) * imagB
+
+            let framesFreq = MLXFFT.irfft(complexSpec, axis: 0)
+            let framesTime = framesFreq.transposed(1, 0)
+            let windowedFrames = framesTime * window
+
+            var audioSamples = [Float](repeating: 0, count: outputLength)
+            var windowEnvelope = [Float](repeating: 0, count: outputLength)
+
+            for i in 0..<numFrames {
+                let start = i * hopLength
+                let frameData = windowedFrames[i].asArray(Float.self)
+                for j in 0..<min(nFft, frameData.count) where start + j < outputLength {
+                    audioSamples[start + j] += frameData[j]
+                    windowEnvelope[start + j] += windowSq[j]
+                }
+            }
+
+            // Normalize by window squared envelope
+            for i in 0..<outputLength {
+                if windowEnvelope[i] > 1e-11 {
+                    audioSamples[i] /= windowEnvelope[i]
+                }
+            }
+
+            // "same" padding trim: (winLength - hopLength) / 2 from each side
+            let pad = (nFft - hopLength) / 2
+            let trimEnd = min(outputLength, outputLength - pad)
+            let trimmed: [Float]
+            if trimEnd > pad {
+                trimmed = Array(audioSamples[pad..<trimEnd])
+            } else {
+                trimmed = audioSamples
+            }
+
+            outputs.append(MLXArray(trimmed))
+        }
+
+        return outputs.count == 1 ? outputs[0] : MLX.stacked(outputs, axis: 0)
+    }
+
+    /// Periodic Hann window: w[n] = 0.5 - 0.5 * cos(2πn / N)
+    /// Matches torch.hann_window(N, periodic=True)
+    private func periodicHannWindow(length: Int) -> MLXArray {
+        guard length > 1 else { return MLXArray([Float(1.0)]) }
+        let factor = Float.pi / Float(length)   // 2π / (2*length) = π / length
+        let window = (0..<length).map { 0.5 - 0.5 * cos(2.0 * factor * Float($0)) }
+        return MLXArray(window)
+    }
+}
+
 // MARK: - LavaSR Enhancer Model
 
 /// Vocos-based bandwidth extension model with LavaSR v2 weights.
-/// Uses mel spectrogram → ConvNeXt backbone → ISTFT reconstruction.
+/// Uses mel spectrogram → ConvNeXt backbone → custom ISTFT head.
 private class LavaSREnhancer: Module {
     nonisolated(unsafe) let backbone: VocosBackbone
-    nonisolated(unsafe) let head: ISTFTHead
+    nonisolated(unsafe) let head: LavaSRISTFTHead
 
-    // Mel spectrogram config (from LavaSR enhancer_v2/config.yaml)
-    private nonisolated static let nFft = 2048
+    // From LavaSR enhancer_v2/config.yaml
+    nonisolated static let nFft = 2048
     private nonisolated static let hopLength = 512
     private nonisolated static let nMels = 80
-    private nonisolated static let sampleRate = 48000
+    nonisolated static let sampleRate = 44100
 
-    // Precomputed from model weights — exact match to training config
     nonisolated(unsafe) var melFilterbank: MLXArray?
     nonisolated(unsafe) var stftWindow: MLXArray?
 
@@ -183,19 +284,17 @@ private class LavaSREnhancer: Module {
             intermediateDim: 1536,
             numLayers: 8
         )
-        self.head = ISTFTHead(dim: 512, nFft: Self.nFft, hopLength: Self.hopLength)
+        self.head = LavaSRISTFTHead(dim: 512, nFft: Self.nFft, hopLength: Self.hopLength)
         super.init()
     }
 
     static func load() async throws -> LavaSREnhancer {
         let model = LavaSREnhancer()
 
-        // Try loading from bundled resources first, then HuggingFace cache
         let weightsURL: URL
         if let bundled = Bundle.main.url(forResource: "lavasr_enhancer_v2", withExtension: "safetensors") {
             weightsURL = bundled
         } else {
-            // Download from HuggingFace
             let modelDir = try await ModelUtils.resolveOrDownloadModel(
                 repoID: "YatharthS/LavaSR",
                 requiredExtension: "bin"
@@ -212,11 +311,7 @@ private class LavaSREnhancer: Module {
 
         var weights = try MLX.loadArrays(url: weightsURL)
 
-        // Extract precomputed mel filterbank and STFT window before filtering
-        // These are the EXACT values used during training — using them ensures
-        // the mel spectrogram matches what the model expects.
         if let fb = weights["feature_extractor.mel_spec.mel_scale.fb"] {
-            // Shape [1025, 80] — transpose to [80, 1025] for matmul(magnitude, fb.T)
             model.melFilterbank = fb
             print("[LavaSR] loaded precomputed mel filterbank: \(fb.shape)")
         }
@@ -231,7 +326,7 @@ private class LavaSREnhancer: Module {
         }
         for key in nonModuleKeys { weights.removeValue(forKey: key) }
 
-        // PyTorch Conv1d weights are (C_out, C_in, K); MLX expects (C_out, K, C_in).
+        // PyTorch Conv1d weights (C_out, C_in, K) → MLX (C_out, K, C_in)
         for (key, value) in weights {
             if key.hasSuffix(".weight") && value.ndim == 3 {
                 weights[key] = value.transposed(0, 2, 1)
@@ -244,43 +339,35 @@ private class LavaSREnhancer: Module {
     }
 
     func enhance(_ audio: MLXArray) throws -> MLXArray {
-        // Compute mel spectrogram
         let mel = computeMelSpectrogram(audio)
-
-        // Run Vocos backbone + head
         let features = backbone(mel)
-        let reconstructed = head(features)
-
-        return reconstructed
+        return head(features)
     }
 
-    // MARK: - Mel spectrogram
+    // MARK: - Mel spectrogram (matching Python Vocos MelSpectrogramFeatures)
 
     private func computeMelSpectrogram(_ audio: MLXArray) -> MLXArray {
         let nFft = Self.nFft
         let hopLength = Self.hopLength
 
-        // Use precomputed window from model weights, or generate Hann window
+        // Use precomputed periodic Hann window from model weights
         let window: MLXArray
         if let w = stftWindow {
             window = w
         } else {
-            let n = (0..<nFft).map { Float($0) }
-            let factor = Float.pi / Float(nFft - 1)
-            window = MLXArray(n.map { 0.5 - 0.5 * cos(2.0 * factor * $0) })
+            let factor = Float.pi / Float(nFft)
+            window = MLXArray((0..<nFft).map { 0.5 - 0.5 * cos(2.0 * factor * Float($0)) })
         }
 
-        // Reflect-pad audio (center padding, matches PyTorch padding="center")
-        // MLX PadMode has no .reflect case; implement manually using negative-stride subscript.
-        let padAmount = nFft / 2
+        // "same" padding: (winLength - hopLength) / 2 on each side, reflect mode
+        // Python: center=False, manual pad of (win_length - hop_length) // 2
+        let padAmount = (nFft - hopLength) / 2
         let n = audio.shape[0]
-        // leading: samples [padAmount..1] reversed (reflect excludes boundary)
         let leading = audio[from: padAmount, to: 0, stride: -1, axis: 0]
-        // trailing: samples [n-2..n-1-padAmount] reversed
         let trailing = audio[from: n - 2, to: n - 2 - padAmount, stride: -1, axis: 0]
         let padded = MLX.concatenated([leading, audio, trailing], axis: 0)
 
-        // Frame the signal into overlapping windows
+        // Frame into overlapping windows
         let numSamples = padded.shape[0]
         let numFrames = 1 + (numSamples - nFft) / hopLength
 
@@ -288,29 +375,23 @@ private class LavaSREnhancer: Module {
         frames.reserveCapacity(numFrames)
         for i in 0..<numFrames {
             let start = i * hopLength
-            let frame = padded[start..<(start + nFft)] * window
-            frames.append(frame)
+            frames.append(padded[start..<(start + nFft)] * window)
         }
-        let framed = MLX.stacked(frames, axis: 0)  // (T, nFft)
+        let framed = MLX.stacked(frames, axis: 0)
 
-        // RFFT → power spectrum
-        let spec = MLXFFT.rfft(framed, axis: 1)     // (T, nFft/2+1) complex
-        let power = abs(spec).square()                // (T, 1025) power
+        // RFFT → magnitude spectrum (power=1 in Python config)
+        let spec = MLXFFT.rfft(framed, axis: 1)
+        let magnitude = abs(spec)
 
-        // Apply mel filterbank — use precomputed from model weights
-        let fb: MLXArray
-        if let precomputed = melFilterbank {
-            fb = precomputed  // shape [1025, 80] from PyTorch
-        } else {
+        guard let fb = melFilterbank else {
             fatalError("[LavaSR] mel filterbank not loaded from weights")
         }
 
-        let melSpec = MLX.matmul(power, fb)           // (T, 80)
+        let melSpec = MLX.matmul(magnitude, fb)
 
-        // Log scale (matches PyTorch: log10(mel + 1e-7))
-        let logMel = MLX.log10(melSpec + 1e-7)
+        // safe_log: torch.log(torch.clip(x, min=1e-5)) — natural log, not log10
+        let logMel = MLX.log(MLX.clip(melSpec, min: MLXArray(Float(1e-5))))
 
-        // Shape: (T, 80) → (1, T, 80) for backbone
         return logMel.expandedDimensions(axis: 0)
     }
 }

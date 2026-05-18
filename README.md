@@ -35,6 +35,27 @@ Added via a [forked mlx-audio-swift](https://github.com/slaughters85j/mlx-audio-
 
 Both backends conform to `TTSEngineProtocol`. Switching between them is a picker selection — the active engine swaps at runtime with automatic memory management (inactive backend unloads from RAM).
 
+### Fish Performance: Reference Audio Length Benchmark
+
+Benchmarked on M1 Ultra with the same 57-character input text, varying reference audio from 3s to 20s:
+
+| Ref (s) | Codes | Gen (s) | Audio (s) | RTF | chars/s |
+|---------|-------|---------|-----------|------|---------|
+| 3 | 65 | 28.84 | 4.04 | 0.14x | 2.0 |
+| 6 | 130 | 27.89 | 4.13 | 0.15x | 2.0 |
+| 9 | 194 | 33.40 | 4.88 | 0.15x | 1.7 |
+| 12 | 259 | 29.52 | 4.37 | 0.15x | 1.9 |
+| 15 | 323 | 33.36 | 4.92 | 0.15x | 1.7 |
+| 20 | 431 | 25.50 | 3.81 | 0.15x | 2.2 |
+
+**Key findings:**
+- **Reference length does not affect generation speed.** The ~30% variance (25-33s) is noise from thermal throttling and non-deterministic output length, not from attention over reference codes.
+- **The bottleneck is the autoregressive decode loop** — each output token has a fixed inference cost regardless of context length. Generation runs at ~0.15x real-time consistently.
+- **15 seconds is the quality sweet spot** for reference audio — enough voice signal for high-fidelity cloning without diluting it. Shorter clips (3-6s) produce noticeably lower quality; 20s offers no improvement over 15s.
+- **Pocket-TTS generates the same text in 2.11s** (2.9x real-time, 27 chars/s) — ~15x faster than Fish.
+
+The benchmark test is in `pocket-tts-macosTests/FishRefLengthBenchmark.swift`.
+
 ## Voice Management
 
 The Voice Manager (waveform icon in the app header) is the canonical place to import, enhance, and manage voices for both backends. One WAV import produces voices for both engines automatically.
@@ -44,8 +65,10 @@ The Voice Manager (waveform icon in the app header) is the canonical place to im
 WAV → [LavaSR enhancement (optional)] → [Fish DAC encode] + [MimiEncoder → voice_prompt_phase → KV safetensors]
 ```
 
-- **LavaSR Enhancement** — MLX-native port of the Vocos BWE model with precomputed mel filterbank. Denoise toggle and RMS target level (-30 to -6 dB) configurable per voice.
-- **Enhancement Studio** — A/B comparison (Play original vs enhanced), Accept & Save / Reject / Re-enhance flow.
+- **LavaSR Enhancement** — MLX-native port of the Vocos BWE (bandwidth extension) model. Uses a custom ISTFT head matching the Python Vocos pipeline exactly: periodic Hann window, window-squared overlap-add normalization, and "same" padding. Best suited for noisy or low-quality recordings — clean studio audio may sound worse after enhancement due to inherent model artifacts.
+- **RMS Normalization** — All imported voices are automatically RMS-normalized to -16 dB at import time, ensuring consistent volume for encoding regardless of whether enhancement is applied.
+- **Enhancement Studio** — A/B comparison (Play original vs enhanced), Accept & Save / Reject / Re-enhance flow. Denoise toggle and RMS target level (-30 to -6 dB) configurable per voice.
+- **Mono preconditioning** — Stereo or non-44.1kHz WAVs are automatically converted to mono 44.1kHz at import time for consistent downstream processing.
 - **Memory management** — All import models (MimiEncoder, LavaSR, voice_prompt_phase) unload after encoding. Fish engine unloads when switching to Pocket-TTS. MLX GPU cache cleared on unload.
 
 ## AI Script Writer

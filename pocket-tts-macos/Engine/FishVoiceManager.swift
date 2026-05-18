@@ -57,11 +57,14 @@ final class FishVoiceManager {
         let id = UUID().uuidString
         let destURL = voicesDir.appendingPathComponent("\(id).wav")
 
-        if sourceURL.pathExtension.lowercased() == "wav" {
+        if sourceURL.pathExtension.lowercased() == "wav", needsConversion(sourceURL) == false {
             try FileManager.default.copyItem(at: sourceURL, to: destURL)
         } else {
             try convertToWAV(source: sourceURL, destination: destURL)
         }
+
+        // Normalize volume to -16 dB RMS for consistent encoding input
+        try rmsNormalizeWAV(at: destURL)
 
         let voice = FishVoice(
             id: id,
@@ -207,7 +210,37 @@ final class FishVoiceManager {
         }
     }
 
-    // MARK: - Audio conversion
+    // MARK: - Audio conversion & normalization
+
+    /// Returns true if the WAV needs conversion (stereo or wrong sample rate).
+    private func needsConversion(_ url: URL) -> Bool {
+        guard let file = try? AVAudioFile(forReading: url) else { return true }
+        let fmt = file.processingFormat
+        return fmt.channelCount != 1 || Int(fmt.sampleRate) != 44100
+    }
+
+    /// Normalizes WAV in-place to -16 dB RMS for consistent encoder input.
+    private func rmsNormalizeWAV(at url: URL, targetDB: Float = -16.0) throws {
+        let file = try AVAudioFile(forReading: url)
+        let format = file.processingFormat
+        let frameCount = AVAudioFrameCount(file.length)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+        try file.read(into: buffer)
+        guard let samples = buffer.floatChannelData?[0] else { return }
+        let count = Int(buffer.frameLength)
+
+        var sumSq: Float = 0
+        for i in 0..<count { sumSq += samples[i] * samples[i] }
+        let rms = sqrt(sumSq / Float(count))
+        guard rms > 1e-8 else { return }
+
+        let targetRMS = pow(10, targetDB / 20.0)
+        let gain = targetRMS / rms
+        for i in 0..<count { samples[i] = min(max(samples[i] * gain, -1.0), 1.0) }
+
+        let outFile = try AVAudioFile(forWriting: url, settings: format.settings)
+        try outFile.write(from: buffer)
+    }
 
     private func convertToWAV(source: URL, destination: URL) throws {
         guard let inputFile = try? AVAudioFile(forReading: source) else {
