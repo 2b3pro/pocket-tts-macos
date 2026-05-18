@@ -79,18 +79,42 @@ struct ContentView: View {
                 }
             )
         }
+        .sheet(isPresented: $appState.showsVoiceManager) {
+            VoiceManagerView(
+                isPresented: $appState.showsVoiceManager,
+                pocketTTSVoices: voices,
+                onEncodeVoice: { voiceID in
+                    Task {
+                        guard let fish = appState.fishEngine else { return }
+                        try? await fish.encodeVoice(voiceID: voiceID)
+                    }
+                }
+            )
+        }
     }
 
     // MARK: - Header (drag region + title)
 
     private var header: some View {
-        VStack(spacing: 2) {
-            Text("Pocket TTS")
-                .font(Theme.font2XL)
-                .foregroundStyle(Theme.textPrimary)
-            Text("High-quality text-to-speech that runs on your CPU")
-                .font(Theme.fontSM)
-                .foregroundStyle(Theme.textSecondary)
+        HStack {
+            Spacer()
+            VStack(spacing: 2) {
+                Text("Pocket TTS")
+                    .font(Theme.font2XL)
+                    .foregroundStyle(Theme.textPrimary)
+                Text("High-quality text-to-speech that runs on your CPU")
+                    .font(Theme.fontSM)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            Spacer()
+            Button(action: { appState.showsVoiceManager = true }) {
+                Image(systemName: "waveform.circle")
+                    .font(.system(size: 18))
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            .buttonStyle(.plain)
+            .help("Voice Manager")
+            .padding(.trailing, Theme.space4)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, Theme.space4)

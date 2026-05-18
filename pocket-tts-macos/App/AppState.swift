@@ -59,6 +59,9 @@ final class AppState {
     /// Settings sheet visibility (toggled by Cmd+, or the gear icon).
     var showsSettingsSheet: Bool = false
 
+    /// Voice Manager sheet visibility.
+    var showsVoiceManager: Bool = false
+
     /// LM Studio chat settings. Persisted via UserDefaults; loaded once at init.
     var chatSettings: ChatSettings
 
