@@ -164,7 +164,7 @@ actor FishEngine: TTSEngineProtocol {
         eval(codes)
 
         let codesDir = await FishVoiceManager.shared.codesDir()
-        let codesURL = codesDir.appendingPathComponent("\(voiceID)_codes.safetensors")
+        let codesURL = codesDir.appendingPathComponent("\(voiceID)_codes.npy")
         try MLX.save(array: codes, url: codesURL)
 
         await FishVoiceManager.shared.setCachedCodes(
@@ -188,8 +188,20 @@ actor FishEngine: TTSEngineProtocol {
         guard voiceID != "fish-default" else { return nil }
         return await MainActor.run {
             guard let voice = FishVoiceManager.shared.voice(for: voiceID) else { return nil }
+            // Prefer enhanced WAV if available
+            let effectiveWAV: String
+            if voice.isEnhanced {
+                let enhancedURL = FishVoiceManager.shared.enhancedWAVURL(for: voiceID)
+                if FileManager.default.fileExists(atPath: enhancedURL.path) {
+                    effectiveWAV = enhancedURL.path
+                } else {
+                    effectiveWAV = voice.wavPath
+                }
+            } else {
+                effectiveWAV = voice.wavPath
+            }
             return VoiceMeta(
-                wavPath: voice.wavPath,
+                wavPath: effectiveWAV,
                 transcript: voice.transcript,
                 cachedCodesPath: voice.cachedCodesPath,
                 codesLength: voice.codesLength

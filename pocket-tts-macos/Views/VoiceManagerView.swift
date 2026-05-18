@@ -13,8 +13,10 @@ struct VoiceManagerView: View {
     @Binding var isPresented: Bool
     let pocketTTSVoices: [Voice]
     var onEncodeVoice: ((String) -> Void)?
+    var onEnhanceVoice: ((String) -> Void)?
 
     @State private var showImporter = false
+    @State private var enhanceOnImport = true
     @State private var statusMessage: String?
     @State private var statusIsError = false
 
@@ -75,6 +77,18 @@ struct VoiceManagerView: View {
             Text("Import a voice recording (.wav, .mp3, .aiff). The voice will be processed for Fish Speech voice cloning.")
                 .font(Theme.fontXS)
                 .foregroundStyle(Theme.textSecondary)
+
+            Toggle(isOn: $enhanceOnImport) {
+                HStack(spacing: 4) {
+                    Image(systemName: "wand.and.stars")
+                        .font(.system(size: 11))
+                    Text("Enhance with LavaSR")
+                        .font(Theme.fontXS)
+                }
+                .foregroundStyle(Theme.textPrimary)
+            }
+            .toggleStyle(.checkbox)
+            .disabled(!VoiceEnhancer.shared.isReady && VoiceEnhancer.shared.status != .idle)
 
             if let statusMessage {
                 Text(statusMessage)
@@ -140,9 +154,10 @@ struct VoiceManagerView: View {
                 ScrollView {
                     VStack(spacing: Theme.space1) {
                         ForEach(fishVoices) { voice in
+                            let detail = voiceStatusLabel(voice)
                             voiceRow(
                                 name: voice.name,
-                                detail: voice.cachedCodesPath != nil ? "Encoded" : "Pending",
+                                detail: detail,
                                 badge: Theme.badgeMultiBG,
                                 badgeText: Theme.badgeMultiFG,
                                 canDelete: true,
@@ -231,14 +246,28 @@ struct VoiceManagerView: View {
 
         do {
             let voice = try FishVoiceManager.shared.importVoice(from: url, name: name)
-            statusMessage = "Encoding \"\(name)\"..."
             statusIsError = false
-            onEncodeVoice?(voice.id)
+
+            if enhanceOnImport {
+                // onEnhanceVoice sequences codec encode after enhance completes
+                statusMessage = "Enhancing \"\(name)\"..."
+                onEnhanceVoice?(voice.id)
+            } else {
+                statusMessage = "Encoding \"\(name)\"..."
+                onEncodeVoice?(voice.id)
+            }
             statusMessage = "Imported \"\(name)\""
             DispatchQueue.main.asyncAfter(deadline: .now() + 4) { statusMessage = nil }
         } catch {
             statusMessage = "Import failed: \(error.localizedDescription)"
             statusIsError = true
         }
+    }
+
+    private func voiceStatusLabel(_ voice: FishVoice) -> String {
+        var parts: [String] = []
+        if voice.isEnhanced { parts.append("Enhanced") }
+        parts.append(voice.cachedCodesPath != nil ? "Encoded" : "Pending")
+        return parts.joined(separator: " · ")
     }
 }

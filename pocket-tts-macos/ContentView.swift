@@ -85,8 +85,43 @@ struct ContentView: View {
                 pocketTTSVoices: voices,
                 onEncodeVoice: { voiceID in
                     Task {
-                        guard let fish = appState.fishEngine else { return }
-                        try? await fish.encodeVoice(voiceID: voiceID)
+                        guard let fish = appState.fishEngine else {
+                            print("[ContentView] encode skipped — fishEngine is nil")
+                            return
+                        }
+                        do {
+                            try await fish.encodeVoice(voiceID: voiceID)
+                            print("[ContentView] encode complete for \(voiceID)")
+                        } catch {
+                            print("[ContentView] encode failed: \(error)")
+                        }
+                    }
+                },
+                onEnhanceVoice: { voiceID in
+                    Task {
+                        // Step 1: Enhance
+                        let enhancer = VoiceEnhancer.shared
+                        await enhancer.bootstrapIfNeeded()
+                        guard let wavURL = FishVoiceManager.shared.wavURL(for: voiceID) else { return }
+                        let outURL = FishVoiceManager.shared.enhancedWAVURL(for: voiceID)
+                        do {
+                            try await enhancer.enhance(inputURL: wavURL, outputURL: outURL)
+                            FishVoiceManager.shared.setEnhanced(for: voiceID)
+                        } catch {
+                            print("[VoiceEnhancer] enhance failed: \(error)")
+                        }
+
+                        // Step 2: Codec encode (sequential — runs after enhance completes)
+                        guard let fish = appState.fishEngine else {
+                            print("[ContentView] encode skipped — fishEngine is nil")
+                            return
+                        }
+                        do {
+                            try await fish.encodeVoice(voiceID: voiceID)
+                            print("[ContentView] encode complete for \(voiceID)")
+                        } catch {
+                            print("[ContentView] encode failed: \(error)")
+                        }
                     }
                 }
             )

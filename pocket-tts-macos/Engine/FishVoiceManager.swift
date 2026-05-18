@@ -22,6 +22,7 @@ struct FishVoice: Identifiable, Codable, Equatable, Sendable {
     var transcribedAt: Date?
     var cachedCodesPath: String?
     var codesLength: Int?
+    var isEnhanced: Bool = false
 }
 
 // MARK: - FishVoiceManager
@@ -88,6 +89,16 @@ final class FishVoiceManager {
     }
 
     func codesDir() -> URL { voicesDir }
+
+    func setEnhanced(for voiceID: String) {
+        guard let idx = voices.firstIndex(where: { $0.id == voiceID }) else { return }
+        voices[idx].isEnhanced = true
+        saveCatalog()
+    }
+
+    func enhancedWAVURL(for voiceID: String) -> URL {
+        voicesDir.appendingPathComponent("\(voiceID)_enhanced.wav")
+    }
 
     /// Verify cached codes files exist; clear stale paths. Returns IDs needing re-encoding.
     func verifyVoiceStates() -> [String] {

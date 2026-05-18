@@ -63,7 +63,10 @@ nonisolated enum ModelPaths {
         guard let urls = Bundle.main.urls(forResourcesWithExtension: "safetensors", subdirectory: nil) else {
             throw LookupError.voiceDirectoryMissing
         }
-        return urls.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        // Filter out non-voice safetensors (e.g. LavaSR model weights)
+        return urls
+            .filter { !$0.lastPathComponent.hasPrefix("lavasr") }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
     // MARK: Private
