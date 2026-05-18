@@ -152,6 +152,12 @@ final class FishVoiceManager {
         saveCatalog()
     }
 
+    func setDescription(_ description: String, for voiceID: String) {
+        guard let idx = voices.firstIndex(where: { $0.id == voiceID }) else { return }
+        voices[idx].description = description
+        saveCatalog()
+    }
+
     // MARK: - Transcript
 
     func setTranscript(_ transcript: String, for voiceID: String) {

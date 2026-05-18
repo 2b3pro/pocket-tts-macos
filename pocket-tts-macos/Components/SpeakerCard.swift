@@ -74,22 +74,25 @@ struct SpeakerCard: View {
 
                 Group {
                     if activeBackend == .pocketTTS {
+                        let importedVoices = FishVoiceManager.shared.voices.filter { $0.pocketTTSKVPath != nil }
                         Picker("", selection: $speaker.voiceID) {
                             Section("Built-in") {
                                 ForEach(voices.filter { $0.type == .predefined }, id: \.id) { v in
                                     Text(v.name).tag(v.id)
                                 }
                             }
-                            Section("Custom") {
-                                ForEach(voices.filter { $0.type == .custom }, id: \.id) { v in
-                                    Text(v.name).tag(v.id)
+                            if !importedVoices.isEmpty {
+                                Section("My Voices") {
+                                    ForEach(importedVoices) { v in
+                                        Text(v.name).tag("imported:\(v.id)")
+                                    }
                                 }
                             }
                         }
                     } else {
+                        let fishVoices = FishVoiceManager.shared.voices
                         Picker("", selection: $speaker.voiceID) {
                             Text("Default Voice").tag("fish-default")
-                            let fishVoices = FishVoiceManager.shared.voices
                             if !fishVoices.isEmpty {
                                 Section("My Voices") {
                                     ForEach(fishVoices) { v in

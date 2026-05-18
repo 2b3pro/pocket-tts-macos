@@ -63,6 +63,13 @@ actor FishEngine: TTSEngineProtocol {
         }
     }
 
+    func unload() {
+        model = nil
+        status = .idle
+        MLX.Memory.clearCache()
+        print("[FishEngine] model unloaded, MLX cache cleared")
+    }
+
     // MARK: - TTSEngineProtocol
 
     nonisolated func availableVoiceIDs() -> [String] {

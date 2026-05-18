@@ -65,6 +65,11 @@ struct ContentView: View {
                     multiVM?.setEngine(fish)
                     print("[Backend] Fish bootstrap complete — engine is now \(type(of: fish))")
                 }
+            } else {
+                // Switching away from Fish — unload to free memory (~6-7 GB)
+                Task {
+                    await appState.fishEngine?.unload()
+                }
             }
         }
         .sheet(isPresented: $appState.showsSettingsSheet) {
@@ -108,6 +113,12 @@ struct ContentView: View {
                                 print("[ContentView] Pocket-TTS KV bake failed: \(error)")
                             }
                         }
+
+                        // Unload Fish if not active
+                        if appState.chatSettings.activeBackend != .fishSpeech {
+                            await appState.fishEngine?.unload()
+                        }
+                        print("[ContentView] import pipeline complete, memory released")
                     }
                 },
                 onEnhanceVoice: { voiceID in
@@ -149,6 +160,12 @@ struct ContentView: View {
                                 print("[ContentView] Pocket-TTS KV bake failed: \(error)")
                             }
                         }
+
+                        // Unload Fish if it's not the active backend (loaded only for codec encoding)
+                        if appState.chatSettings.activeBackend != .fishSpeech {
+                            await appState.fishEngine?.unload()
+                        }
+                        print("[ContentView] import pipeline complete, memory released")
                     }
                 }
             )

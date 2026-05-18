@@ -80,8 +80,11 @@ final class VoiceEnhancer {
         // Write output WAV
         try Self.writeWAV(samples: normalized, sampleRate: 48000, url: outputURL)
 
-        status = .ready
-        print("[VoiceEnhancer] saved to \(outputURL.lastPathComponent)")
+        // Release model from memory — enhancement is a one-shot per import
+        self.model = nil
+        status = .idle
+        MLX.Memory.clearCache()
+        print("[VoiceEnhancer] saved to \(outputURL.lastPathComponent), model unloaded, cache cleared")
     }
 
     var isReady: Bool { status == .ready }

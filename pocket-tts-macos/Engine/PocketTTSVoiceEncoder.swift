@@ -78,6 +78,15 @@ actor PocketTTSVoiceEncoder {
         }
     }
 
+    // MARK: - Unload
+
+    func unloadModels() {
+        mimiEncoder = nil
+        voicePhaseModel = nil
+        MLX.Memory.clearCache()
+        print("[PocketTTSVoiceEncoder] models released, MLX cache cleared")
+    }
+
     // MARK: - nonisolated MLX helpers
 
     /// Load MimiEncoder weights and store into `mimiEncoder`.  Must be called from within the actor.
@@ -151,8 +160,11 @@ actor PocketTTSVoiceEncoder {
         // Step 5: Extract KV cache → safetensors
         try saveKVState(state: phaseState, tVoice: framesToCopy, outputURL: outputURL)
 
-        status = .ready
-        print("[PocketTTSVoiceEncoder] saved KV state → \(outputURL.lastPathComponent) (T_voice=\(framesToCopy))")
+        // Release models from memory — they're not needed after encoding
+        unloadModels()
+
+        status = .idle  // reset to idle so bootstrap() can reload if needed later
+        print("[PocketTTSVoiceEncoder] saved KV state → \(outputURL.lastPathComponent) (T_voice=\(framesToCopy)), models unloaded")
     }
 
     // MARK: - Audio loading
