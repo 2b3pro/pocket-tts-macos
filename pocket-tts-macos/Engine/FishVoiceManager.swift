@@ -3,10 +3,10 @@
 //  pocket-tts-macos
 //
 //  Manages saved WAV reference voices for Fish Speech voice cloning.
-//  User imports WAV/MP3 files via the voice picker; they get copied
-//  into the app's sandbox container and cataloged in voices.json.
+//  On import: copies WAV → codec-encodes via FishEngine's DAC → caches
+//  the ref_codes so synthesis skips the encode step.
 
-import AVFoundation
+@preconcurrency import AVFoundation
 import Foundation
 
 // MARK: - FishVoice
@@ -15,10 +15,12 @@ struct FishVoice: Identifiable, Codable, Equatable, Sendable {
     let id: String
     var name: String
     var description: String
-    let filePath: String
+    let wavPath: String
     let createdAt: Date
     var transcript: String?
     var transcribedAt: Date?
+    var cachedCodesPath: String?
+    var codesLength: Int?
 }
 
 // MARK: - FishVoiceManager
@@ -45,7 +47,7 @@ final class FishVoiceManager {
         loadCatalog()
     }
 
-    // MARK: - Import
+    // MARK: - Import (step 1: copy WAV)
 
     func importVoice(from sourceURL: URL, name: String) throws -> FishVoice {
         let id = UUID().uuidString
@@ -61,10 +63,12 @@ final class FishVoiceManager {
             id: id,
             name: name,
             description: "",
-            filePath: destURL.path,
+            wavPath: destURL.path,
             createdAt: Date(),
             transcript: nil,
-            transcribedAt: nil
+            transcribedAt: nil,
+            cachedCodesPath: nil,
+            codesLength: nil
         )
 
         voices.append(voice)
@@ -72,12 +76,26 @@ final class FishVoiceManager {
         return voice
     }
 
+    // MARK: - Codec caching (step 2: called by FishEngine after bootstrap)
+
+    func setCachedCodes(for voiceID: String, codesPath: String, codesLength: Int) {
+        guard let idx = voices.firstIndex(where: { $0.id == voiceID }) else { return }
+        voices[idx].cachedCodesPath = codesPath
+        voices[idx].codesLength = codesLength
+        saveCatalog()
+    }
+
+    func codesDir() -> URL { voicesDir }
+
     // MARK: - Delete
 
     func deleteVoice(id: String) {
         guard let idx = voices.firstIndex(where: { $0.id == id }) else { return }
         let voice = voices[idx]
-        try? FileManager.default.removeItem(atPath: voice.filePath)
+        try? FileManager.default.removeItem(atPath: voice.wavPath)
+        if let codesPath = voice.cachedCodesPath {
+            try? FileManager.default.removeItem(atPath: codesPath)
+        }
         voices.remove(at: idx)
         saveCatalog()
     }
@@ -99,8 +117,8 @@ final class FishVoiceManager {
 
     func wavURL(for voiceID: String) -> URL? {
         guard let voice = voice(for: voiceID) else { return nil }
-        let url = URL(fileURLWithPath: voice.filePath)
-        return FileManager.default.fileExists(atPath: voice.filePath) ? url : nil
+        let url = URL(fileURLWithPath: voice.wavPath)
+        return FileManager.default.fileExists(atPath: voice.wavPath) ? url : nil
     }
 
     // MARK: - Persistence
@@ -112,7 +130,7 @@ final class FishVoiceManager {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             voices = try decoder.decode([FishVoice].self, from: data)
-            voices.removeAll { !FileManager.default.fileExists(atPath: $0.filePath) }
+            voices.removeAll { !FileManager.default.fileExists(atPath: $0.wavPath) }
         } catch {
             print("[FishVoiceManager] failed to load catalog: \(error)")
         }

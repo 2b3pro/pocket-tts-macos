@@ -14,6 +14,7 @@ struct SingleVoiceView: View {
     let voices: [Voice]
     @Binding var pendingReuse: PendingReuse?
     @Binding var chatSettings: ChatSettings
+    var onEncodeVoice: ((String) -> Void)?
     @Environment(\.modelContext) private var modelContext
 
     @State private var showGenerator = false
@@ -33,7 +34,8 @@ struct SingleVoiceView: View {
                         selectedVoiceID: $viewModel.selectedVoiceID,
                         voices: voices,
                         activeBackend: chatSettings.activeBackend,
-                        disabled: viewModel.status.isWorking
+                        disabled: viewModel.status.isWorking,
+                        onVoiceImported: onEncodeVoice
                     )
 
                     SynthesizeButton(
@@ -45,7 +47,9 @@ struct SingleVoiceView: View {
                         onResume:     { viewModel.resume() }
                     )
 
-                    StatusIndicator(status: viewModel.status)
+                    if chatSettings.activeBackend == .pocketTTS {
+                        StatusIndicator(status: viewModel.status)
+                    }
 
                     if let samples = viewModel.lastResultSamples {
                         AudioPlayer(samples: samples)
@@ -78,7 +82,8 @@ struct SingleVoiceView: View {
         .onAppear {
             viewModel.setModelContext(modelContext)
             if case let .single(text, voiceID) = pendingReuse {
-                viewModel.applyReuse(text: text, voiceID: voiceID)
+                let effectiveVoice = chatSettings.activeBackend == .fishSpeech ? "fish-default" : voiceID
+                viewModel.applyReuse(text: text, voiceID: effectiveVoice)
                 pendingReuse = nil
             }
         }

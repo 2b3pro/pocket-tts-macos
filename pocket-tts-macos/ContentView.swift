@@ -136,14 +136,26 @@ struct ContentView: View {
                     viewModel: singleVM,
                     voices: voices,
                     pendingReuse: $appState.pendingReuse,
-                    chatSettings: $appState.chatSettings
+                    chatSettings: $appState.chatSettings,
+                    onEncodeVoice: { voiceID in
+                        Task {
+                            guard let fish = appState.fishEngine else { return }
+                            try? await fish.encodeVoice(voiceID: voiceID)
+                        }
+                    }
                 )
             case .multi:
                 MultiTalkView(
                     viewModel: multiVM,
                     voices: voices,
                     pendingReuse: $appState.pendingReuse,
-                    chatSettings: $appState.chatSettings
+                    chatSettings: $appState.chatSettings,
+                    onEncodeVoice: { voiceID in
+                        Task {
+                            guard let fish = appState.fishEngine else { return }
+                            try? await fish.encodeVoice(voiceID: voiceID)
+                        }
+                    }
                 )
             case .history:
                 HistoryView(

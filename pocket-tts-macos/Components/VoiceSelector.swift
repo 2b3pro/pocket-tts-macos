@@ -15,6 +15,7 @@ struct VoiceSelector: View {
     var activeBackend: TTSBackendType = .pocketTTS
     var disabled: Bool = false
     var label: String = "Voice"
+    var onVoiceImported: ((String) -> Void)?
 
     @State private var showImporter = false
     @State private var importMessage: String?
@@ -111,10 +112,10 @@ struct VoiceSelector: View {
 
             if selectedVoiceID != "fish-default",
                let voice = FishVoiceManager.shared.voice(for: selectedVoiceID) {
-                if voice.transcript == nil {
-                    Text("No transcript — voice cloning quality may be reduced")
+                if voice.cachedCodesPath != nil {
+                    Text("Voice ready")
                         .font(.system(size: 10))
-                        .foregroundStyle(Theme.warningFG)
+                        .foregroundStyle(Theme.successFG)
                 }
             }
 
@@ -138,6 +139,8 @@ struct VoiceSelector: View {
         do {
             let voice = try FishVoiceManager.shared.importVoice(from: url, name: name)
             selectedVoiceID = voice.id
+            importMessage = "Encoding voice..."
+            onVoiceImported?(voice.id)
             importMessage = "Imported \"\(name)\""
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { importMessage = nil }
         } catch {

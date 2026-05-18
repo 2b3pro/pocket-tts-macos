@@ -9,10 +9,11 @@
 //  Requires SPM: https://github.com/Blaizzy/mlx-audio-swift.git
 //  Add via Xcode → File → Add Package Dependencies if not yet added.
 
-import AVFoundation
+@preconcurrency import AVFoundation
 import Foundation
 
 import MLX
+import MLXAudioCodecs
 import MLXAudioTTS
 import MLXAudioCore
 
@@ -92,23 +93,46 @@ actor FishEngine: TTSEngineProtocol {
         continuation: AsyncStream<PCMFrame>.Continuation
     ) async throws {
         guard status == .ready else { throw FishError.notBootstrapped }
+        guard let model else { throw FishError.notBootstrapped }
 
         print("[FishEngine] synthesize called — voice: \(voiceID), text: \"\(text.prefix(60))...\"")
         let processed = FishEngine.convertPauseTags(text)
 
-        // Load reference audio if a saved voice is selected.
-        // Fetches Sendable metadata (path/transcript) from @MainActor, then reads audio bytes here.
-        let (refAudio, refText) = try await Self.loadReferenceAudio(voiceID: voiceID)
+        let voiceMeta = await Self.loadVoiceMeta(voiceID: voiceID)
+        let audio: MLXArray
 
-        guard let model else { throw FishError.notBootstrapped }
-        let audio = try await model.generate(text: processed, voice: nil, refAudio: refAudio, refText: refText, language: nil)
+        if let codesPath = voiceMeta?.cachedCodesPath,
+           let codesLength = voiceMeta?.codesLength,
+           let fishModel = model as? FishSpeechModel {
+            // Fast path: use pre-encoded codec indices (FishSpeechModel-specific API)
+            let codes = try MLX.loadArray(url: URL(fileURLWithPath: codesPath))
+            print("[FishEngine] using cached codes (\(codesLength) frames)")
+            audio = try await fishModel.generate(
+                text: processed,
+                refCodes: codes,
+                refCodesLength: codesLength,
+                refText: voiceMeta?.transcript
+            )
+        } else if let wavPath = voiceMeta?.wavPath {
+            // Slow path: load raw WAV, codec encodes inside generate()
+            let refAudio = try Self.loadWAVIntoMLXArray(path: wavPath)
+            print("[FishEngine] using raw WAV (no cached codes)")
+            audio = try await model.generate(
+                text: processed, voice: nil, refAudio: refAudio,
+                refText: voiceMeta?.transcript, language: nil
+            )
+        } else {
+            // Default voice: no reference audio
+            audio = try await model.generate(
+                text: processed, voice: nil, refAudio: nil,
+                refText: nil, language: nil
+            )
+        }
+
         let rawSamples = audio.asArray(Float.self)
-
-        // Resample from Fish's 44.1kHz to StreamingPlayer's 24kHz
         let resampled = Self.resample(rawSamples, from: sampleRate, to: Self.playerSampleRate)
         print("[FishEngine] generated \(rawSamples.count) samples @ \(sampleRate)Hz → \(resampled.count) @ \(Self.playerSampleRate)Hz")
 
-        // Chunk into PCMFrames for StreamingPlayer (1920 samples = 80ms @ 24kHz)
         let frameSize = 1920
         var offset = 0
         while offset < resampled.count {
@@ -120,64 +144,93 @@ actor FishEngine: TTSEngineProtocol {
         }
     }
 
-    // MARK: - Reference audio loading
+    // MARK: - Codec pre-encoding (called on voice import)
 
-    /// Sendable tuple used to shuttle metadata from @MainActor to the Fish actor.
-    private struct RefMeta: Sendable { let wavPath: String; let transcript: String? }
-
-    /// Load reference audio samples from disk and wrap in an MLXArray.
-    /// Only Sendable types cross the actor boundary; MLXArray is built locally.
-    private nonisolated static func loadReferenceAudio(voiceID: String) async throws -> (MLXArray?, String?) {
-        guard voiceID != "fish-default" else { return (nil, nil) }
-
-        // Hop to MainActor to read path + transcript, then hop back immediately.
-        let meta: RefMeta? = await MainActor.run {
-            guard let wavURL = FishVoiceManager.shared.wavURL(for: voiceID) else { return nil }
-            let transcript = FishVoiceManager.shared.voice(for: voiceID)?.transcript
-            return RefMeta(wavPath: wavURL.path, transcript: transcript)
-        }
-        guard let meta else {
-            print("[FishEngine] voice \(voiceID) WAV not found, using default")
-            return (nil, nil)
+    func encodeVoice(voiceID: String) async throws {
+        guard let model else { throw FishError.notBootstrapped }
+        guard let codec = (model as? FishSpeechModel)?.codec else {
+            throw FishError.generationFailed(NSError(domain: "FishEngine", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Codec not available"]))
         }
 
-        let wavURL = URL(fileURLWithPath: meta.wavPath)
-        let transcript = meta.transcript
+        let meta = await Self.loadVoiceMeta(voiceID: voiceID)
+        guard let wavPath = meta?.wavPath else { return }
 
-        do {
-            let audioFile = try AVAudioFile(forReading: wavURL)
-            let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 1, interleaved: false)!
-            let frameCount = AVAudioFrameCount(audioFile.length)
-            // Cap at 30 seconds (quality plateaus, reduces KV cache size)
-            let maxFrames = AVAudioFrameCount(30 * 44100)
-            let readFrames = min(frameCount, maxFrames)
+        let refAudio = try Self.loadWAVIntoMLXArray(path: wavPath)
+        let prepared = Self.prepareRefAudio(refAudio)
+        let (indices, featureLengths) = codec.encode(prepared)
+        let promptLength = Int(featureLengths.item(Int32.self))
+        let codes = indices[0]
+        eval(codes)
 
-            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: readFrames) else {
-                return (nil, nil)
+        let codesDir = await FishVoiceManager.shared.codesDir()
+        let codesURL = codesDir.appendingPathComponent("\(voiceID)_codes.safetensors")
+        try MLX.save(array: codes, url: codesURL)
+
+        await FishVoiceManager.shared.setCachedCodes(
+            for: voiceID,
+            codesPath: codesURL.path,
+            codesLength: promptLength
+        )
+        print("[FishEngine] cached codec codes for voice \(voiceID): \(promptLength) frames → \(codesURL.lastPathComponent)")
+    }
+
+    // MARK: - Voice metadata
+
+    private struct VoiceMeta: Sendable {
+        let wavPath: String?
+        let transcript: String?
+        let cachedCodesPath: String?
+        let codesLength: Int?
+    }
+
+    private nonisolated static func loadVoiceMeta(voiceID: String) async -> VoiceMeta? {
+        guard voiceID != "fish-default" else { return nil }
+        return await MainActor.run {
+            guard let voice = FishVoiceManager.shared.voice(for: voiceID) else { return nil }
+            return VoiceMeta(
+                wavPath: voice.wavPath,
+                transcript: voice.transcript,
+                cachedCodesPath: voice.cachedCodesPath,
+                codesLength: voice.codesLength
+            )
+        }
+    }
+
+    // MARK: - WAV loading
+
+    private nonisolated static func loadWAVIntoMLXArray(path: String) throws -> MLXArray {
+        let audioFile = try AVAudioFile(forReading: URL(fileURLWithPath: path))
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 1, interleaved: false)!
+        let maxFrames = AVAudioFrameCount(30 * 44100)
+        let readFrames = min(AVAudioFrameCount(audioFile.length), maxFrames)
+
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: readFrames) else {
+            throw FishError.generationFailed(NSError(domain: "FishEngine", code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Cannot create audio buffer"]))
+        }
+
+        if audioFile.processingFormat.sampleRate == 44100 && audioFile.processingFormat.channelCount == 1 {
+            try audioFile.read(into: buffer, frameCount: readFrames)
+        } else {
+            let srcBuffer = AVAudioPCMBuffer(pcmFormat: audioFile.processingFormat, frameCapacity: readFrames)!
+            try audioFile.read(into: srcBuffer, frameCount: readFrames)
+            let converter = AVAudioConverter(from: audioFile.processingFormat, to: format)!
+            _ = converter.convert(to: buffer, error: nil) { _, outStatus in
+                outStatus.pointee = .haveData
+                return srcBuffer
             }
-
-            if audioFile.processingFormat.sampleRate == 44100 && audioFile.processingFormat.channelCount == 1 {
-                try audioFile.read(into: buffer, frameCount: readFrames)
-            } else {
-                let srcBuffer = AVAudioPCMBuffer(pcmFormat: audioFile.processingFormat, frameCapacity: readFrames)!
-                try audioFile.read(into: srcBuffer, frameCount: readFrames)
-                let converter = AVAudioConverter(from: audioFile.processingFormat, to: format)!
-                try converter.convert(to: buffer, error: nil) { _, outStatus in
-                    outStatus.pointee = .haveData
-                    return srcBuffer
-                }
-            }
-
-            guard let channelData = buffer.floatChannelData?[0] else { return (nil, nil) }
-            let samples = Array(UnsafeBufferPointer(start: channelData, count: Int(buffer.frameLength)))
-            let refAudio = MLXArray(samples)
-
-            print("[FishEngine] loaded ref audio: \(samples.count) samples, transcript: \(transcript?.prefix(40) ?? "none")")
-            return (refAudio, transcript)
-        } catch {
-            print("[FishEngine] failed to load ref audio: \(error)")
-            return (nil, nil)
         }
+
+        guard let channelData = buffer.floatChannelData?[0] else {
+            throw FishError.generationFailed(NSError(domain: "FishEngine", code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "No channel data"]))
+        }
+        return MLXArray(Array(UnsafeBufferPointer(start: channelData, count: Int(buffer.frameLength))))
+    }
+
+    private nonisolated static func prepareRefAudio(_ audio: MLXArray) -> MLXArray {
+        audio.expandedDimensions(axis: 0).expandedDimensions(axis: 0)
     }
 
     // MARK: - Resampling
@@ -219,3 +272,4 @@ actor FishEngine: TTSEngineProtocol {
         return result
     }
 }
+

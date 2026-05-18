@@ -15,8 +15,8 @@ import Observation
 enum AppTab: String, CaseIterable, Identifiable, Hashable {
     case single
     case multi
-    case history
     case chat
+    case history
 
     var id: String { rawValue }
 
