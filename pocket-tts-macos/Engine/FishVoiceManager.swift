@@ -23,6 +23,7 @@ struct FishVoice: Identifiable, Codable, Equatable, Sendable {
     var cachedCodesPath: String?
     var codesLength: Int?
     var isEnhanced: Bool = false
+    var pocketTTSKVPath: String?
 }
 
 // MARK: - FishVoiceManager
@@ -90,6 +91,12 @@ final class FishVoiceManager {
 
     func codesDir() -> URL { voicesDir }
 
+    func setPocketTTSKVPath(_ path: String, for voiceID: String) {
+        guard let idx = voices.firstIndex(where: { $0.id == voiceID }) else { return }
+        voices[idx].pocketTTSKVPath = path
+        saveCatalog()
+    }
+
     func setEnhanced(for voiceID: String) {
         guard let idx = voices.firstIndex(where: { $0.id == voiceID }) else { return }
         voices[idx].isEnhanced = true
@@ -110,7 +117,13 @@ final class FishVoiceManager {
                     voices[i].codesLength = nil
                 }
             }
-            if voices[i].cachedCodesPath == nil {
+            if let path = voices[i].pocketTTSKVPath {
+                if !FileManager.default.fileExists(atPath: path) {
+                    voices[i].pocketTTSKVPath = nil
+                }
+            }
+            // Need encoding if either Fish codes OR Pocket-TTS KV is missing
+            if voices[i].cachedCodesPath == nil || voices[i].pocketTTSKVPath == nil {
                 needsEncoding.append(voices[i].id)
             }
         }
@@ -126,6 +139,14 @@ final class FishVoiceManager {
         try? FileManager.default.removeItem(atPath: voice.wavPath)
         if let codesPath = voice.cachedCodesPath {
             try? FileManager.default.removeItem(atPath: codesPath)
+        }
+        if let kvPath = voice.pocketTTSKVPath {
+            try? FileManager.default.removeItem(atPath: kvPath)
+        }
+        // Also clean up enhanced WAV
+        let enhancedPath = enhancedWAVURL(for: voice.id).path
+        if FileManager.default.fileExists(atPath: enhancedPath) {
+            try? FileManager.default.removeItem(atPath: enhancedPath)
         }
         voices.remove(at: idx)
         saveCatalog()

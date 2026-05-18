@@ -2,16 +2,14 @@
 //  VoiceManagerView.swift
 //  pocket-tts-macos
 //
-//  Central voice management: view, import, and delete voices for both
-//  Pocket-TTS and Fish backends. Import a WAV once → it gets processed
-//  for whichever backends are available.
+//  Central voice management. Import a WAV once → it gets processed for
+//  both TTS backends. Single unified list of voices with status badges.
 
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct VoiceManagerView: View {
     @Binding var isPresented: Bool
-    let pocketTTSVoices: [Voice]
     var onEncodeVoice: ((String) -> Void)?
     var onEnhanceVoice: ((String) -> Void)?
 
@@ -19,19 +17,18 @@ struct VoiceManagerView: View {
     @State private var enhanceOnImport = true
     @State private var statusMessage: String?
     @State private var statusIsError = false
+    @State private var voiceToDelete: FishVoice?
 
     var body: some View {
         ModalContainer(title: "Voice Manager", onClose: { isPresented = false }) {
             VStack(alignment: .leading, spacing: Theme.space4) {
                 importSection
                 Divider().background(Theme.borderColor)
-                pocketTTSSection
-                Divider().background(Theme.borderColor)
-                fishSection
+                voicesList
                 Divider().background(Theme.borderColor)
                 actions
             }
-            .frame(maxWidth: 560, maxHeight: 600)
+            .frame(maxWidth: 560, maxHeight: 500)
         }
         .fileImporter(
             isPresented: $showImporter,
@@ -41,6 +38,20 @@ struct VoiceManagerView: View {
             handleImport(result)
         }
         .task { await verifyAndEncodeVoices() }
+        .alert("Delete Voice", isPresented: Binding(
+            get: { voiceToDelete != nil },
+            set: { if !$0 { voiceToDelete = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { voiceToDelete = nil }
+            Button("Delete", role: .destructive) {
+                if let voice = voiceToDelete {
+                    FishVoiceManager.shared.deleteVoice(id: voice.id)
+                    voiceToDelete = nil
+                }
+            }
+        } message: {
+            Text("Delete \"\(voiceToDelete?.name ?? "")\"? This removes the voice and all its encoded data from both backends.")
+        }
     }
 
     private func verifyAndEncodeVoices() async {
@@ -74,7 +85,7 @@ struct VoiceManagerView: View {
                 }
                 .buttonStyle(.plain)
             }
-            Text("Import a voice recording (.wav, .mp3, .aiff). The voice will be enhanced and codec-encoded for Fish Speech voice cloning. Pocket TTS uses bundled voices only.")
+            Text("Import a voice recording (.wav, .mp3, .aiff). The voice will be processed for both TTS backends automatically.")
                 .font(Theme.fontXS)
                 .foregroundStyle(Theme.textSecondary)
 
@@ -98,54 +109,23 @@ struct VoiceManagerView: View {
         }
     }
 
-    // MARK: - Pocket-TTS voices
+    // MARK: - Voices list
 
-    private var pocketTTSSection: some View {
-        VStack(alignment: .leading, spacing: Theme.space3) {
-            HStack {
-                Text("Pocket TTS Voices")
-                    .font(Theme.fontSMBold)
-                    .foregroundStyle(Theme.textPrimary)
-                Spacer()
-                Text("\(pocketTTSVoices.count)")
-                    .font(Theme.fontXS)
-                    .foregroundStyle(Theme.textSecondary)
-            }
-
-            ScrollView {
-                VStack(spacing: Theme.space1) {
-                    ForEach(pocketTTSVoices) { voice in
-                        voiceRow(
-                            name: voice.name,
-                            detail: voice.type == .predefined ? "Built-in" : "Custom",
-                            badge: voice.type == .predefined ? Theme.badgeSingleBG : Theme.bgTertiary,
-                            badgeText: voice.type == .predefined ? Theme.badgeSingleFG : Theme.textSecondary,
-                            canDelete: false
-                        )
-                    }
-                }
-            }
-            .frame(maxHeight: 120)
-        }
-    }
-
-    // MARK: - Fish voices
-
-    private var fishSection: some View {
-        let fishVoices = FishVoiceManager.shared.voices
+    private var voicesList: some View {
+        let voices = FishVoiceManager.shared.voices
 
         return VStack(alignment: .leading, spacing: Theme.space3) {
             HStack {
-                Text("Fish Audio Voices")
+                Text("My Voices")
                     .font(Theme.fontSMBold)
                     .foregroundStyle(Theme.textPrimary)
                 Spacer()
-                Text("\(fishVoices.count)")
+                Text("\(voices.count)")
                     .font(Theme.fontXS)
                     .foregroundStyle(Theme.textSecondary)
             }
 
-            if fishVoices.isEmpty {
+            if voices.isEmpty {
                 Text("No voices imported yet. Use \"Import WAV\" above to add a voice.")
                     .font(Theme.fontXS)
                     .foregroundStyle(Theme.textSecondary)
@@ -153,20 +133,12 @@ struct VoiceManagerView: View {
             } else {
                 ScrollView {
                     VStack(spacing: Theme.space1) {
-                        ForEach(fishVoices) { voice in
-                            let detail = voiceStatusLabel(voice)
-                            voiceRow(
-                                name: voice.name,
-                                detail: detail,
-                                badge: Theme.badgeMultiBG,
-                                badgeText: Theme.badgeMultiFG,
-                                canDelete: true,
-                                onDelete: { FishVoiceManager.shared.deleteVoice(id: voice.id) }
-                            )
+                        ForEach(voices) { voice in
+                            voiceRow(voice)
                         }
                     }
                 }
-                .frame(maxHeight: 160)
+                .frame(maxHeight: 240)
             }
         }
     }
@@ -191,44 +163,50 @@ struct VoiceManagerView: View {
 
     // MARK: - Voice row
 
-    private func voiceRow(
-        name: String,
-        detail: String,
-        badge: Color,
-        badgeText: Color,
-        canDelete: Bool,
-        onDelete: (() -> Void)? = nil
-    ) -> some View {
+    private func voiceRow(_ voice: FishVoice) -> some View {
         HStack(spacing: Theme.space3) {
-            Text(name)
+            Text(voice.name)
                 .font(Theme.fontSM)
                 .foregroundStyle(Theme.textPrimary)
                 .lineLimit(1)
 
             Spacer()
 
-            Text(detail)
-                .font(.system(size: 10))
-                .foregroundStyle(badgeText)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 2)
-                .background(badge)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
-
-            if canDelete, let onDelete {
-                Button(action: onDelete) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.errorFG)
-                }
-                .buttonStyle(.plain)
-                .help("Delete voice")
+            ForEach(statusBadges(voice), id: \.self) { badge in
+                Text(badge)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Theme.textSecondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Theme.bgTertiary)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
             }
+
+            Button(action: { voiceToDelete = voice }) {
+                Image(systemName: "trash")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.errorFG)
+            }
+            .buttonStyle(.plain)
+            .help("Delete voice")
         }
         .padding(.horizontal, Theme.space3)
         .padding(.vertical, Theme.space2)
-        .background(Theme.bgTertiary.opacity(0.5))
+        .background(Theme.bgTertiary.opacity(0.3))
         .clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
+    }
+
+    private func statusBadges(_ voice: FishVoice) -> [String] {
+        var badges: [String] = []
+        if voice.isEnhanced { badges.append("Enhanced") }
+        if voice.cachedCodesPath != nil && voice.pocketTTSKVPath != nil {
+            badges.append("Ready")
+        } else if voice.cachedCodesPath != nil || voice.pocketTTSKVPath != nil {
+            badges.append("Partial")
+        } else {
+            badges.append("Pending")
+        }
+        return badges
     }
 
     // MARK: - Import handler
@@ -249,7 +227,6 @@ struct VoiceManagerView: View {
             statusIsError = false
 
             if enhanceOnImport {
-                // onEnhanceVoice sequences codec encode after enhance completes
                 statusMessage = "Enhancing \"\(name)\"..."
                 onEnhanceVoice?(voice.id)
             } else {
@@ -262,12 +239,5 @@ struct VoiceManagerView: View {
             statusMessage = "Import failed: \(error.localizedDescription)"
             statusIsError = true
         }
-    }
-
-    private func voiceStatusLabel(_ voice: FishVoice) -> String {
-        var parts: [String] = []
-        if voice.isEnhanced { parts.append("Enhanced") }
-        parts.append(voice.cachedCodesPath != nil ? "Encoded" : "Pending")
-        return parts.joined(separator: " · ")
     }
 }

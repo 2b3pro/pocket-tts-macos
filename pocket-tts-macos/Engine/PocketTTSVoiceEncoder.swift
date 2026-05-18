@@ -3,9 +3,7 @@
 //  pocket-tts-macos
 //
 //  Encodes a WAV file into Pocket-TTS KV cache states (safetensors).
-//  Uses two Core ML models:
-//    1. mimi_encoder.mlpackage: audio → conditioning embeddings
-//    2. voice_prompt_phase.mlpackage: conditioning → KV cache (stateful)
+//  Pipeline: WAV → MimiEncoder (MLX) → voice_prompt_phase (Core ML) → safetensors.
 //
 //  The output safetensors matches the format of the bundled voice files
 //  in Resources/voice_kv_states/ and can be loaded by VoiceLoader.
@@ -13,10 +11,13 @@
 @preconcurrency import AVFoundation
 import CoreML
 import Foundation
+import MLX
 
 // MARK: - PocketTTSVoiceEncoder
 
 actor PocketTTSVoiceEncoder {
+
+    static let shared = PocketTTSVoiceEncoder()
 
     enum EncoderError: Error, CustomStringConvertible {
         case modelNotFound(String)
@@ -30,73 +31,113 @@ actor PocketTTSVoiceEncoder {
         }
     }
 
+    enum Status: Equatable {
+        case idle, loading, ready, encoding, error(String)
+    }
+
     // Constants matching the conversion scripts
     private static let sampleRate = 24_000
     private static let maxSeconds = 15
-    private static let fixedSamples = sampleRate * maxSeconds
     private static let tVoiceMax = 200
     private static let nLayers = 6
     private static let nHeads = 16
     private static let dHead = 64
     private static let maxSeq = 512
 
-    private var encoderModel: MLModel?
-    private var voicePhaseModel: MLModel?
+    private(set) var status: Status = .idle
+    // nonisolated(unsafe): neither MimiEncoder (holds MLXArrays) nor MLModel conform to Sendable.
+    // Both are stored and accessed exclusively within the actor's serial context; no external sharing.
+    nonisolated(unsafe) private var mimiEncoder: MimiEncoder?
+    nonisolated(unsafe) private var voicePhaseModel: MLModel?
 
     // MARK: - Bootstrap
 
-    func bootstrap() throws {
-        let cuNoANE = MLModelConfiguration()
-        cuNoANE.computeUnits = .cpuAndGPU
+    func bootstrap() async {
+        guard status == .idle else { return }
+        status = .loading
+        do {
+            // Load MimiEncoder (MLX-native).  We call through the nonisolated helper so that
+            // the MimiEncoder instance (which holds non-Sendable MLXArrays) never crosses an
+            // actor boundary — it is created and stored entirely on the actor's executor.
+            try loadMimiEncoder()
+            let encoder = mimiEncoder  // already set; just confirm it's present
 
-        let encoderURL = try ModelPaths.url(forResource: "mimi_encoder", withExtension: "mlmodelc")
-        let phaseURL = try ModelPaths.url(forResource: "voice_prompt_phase", withExtension: "mlmodelc")
+            _ = encoder  // silence unused-variable warning
 
-        self.encoderModel = try MLModel(contentsOf: encoderURL, configuration: cuNoANE)
-        self.voicePhaseModel = try MLModel(contentsOf: phaseURL, configuration: cuNoANE)
-        print("[PocketTTSVoiceEncoder] models loaded")
+            // Load voice_prompt_phase (Core ML)
+            let cuNoANE = MLModelConfiguration()
+            cuNoANE.computeUnits = .cpuAndGPU
+            let phaseURL = try Self.bundleURL(forResource: "voice_prompt_phase", withExtension: "mlmodelc")
+            self.voicePhaseModel = try MLModel(contentsOf: phaseURL, configuration: cuNoANE)
+
+            status = .ready
+            print("[PocketTTSVoiceEncoder] models loaded (MimiEncoder + voice_prompt_phase)")
+        } catch {
+            status = .error(String(describing: error))
+            print("[PocketTTSVoiceEncoder] bootstrap failed: \(error)")
+        }
     }
 
-    // MARK: - Encode voice from WAV → safetensors
+    // MARK: - nonisolated MLX helpers
 
-    func encodeVoice(wavURL: URL, outputURL: URL) throws {
-        guard let encoder = encoderModel, let phase = voicePhaseModel else {
+    /// Load MimiEncoder weights and store into `mimiEncoder`.  Must be called from within the actor.
+    private nonisolated func loadMimiEncoder() throws {
+        mimiEncoder = try MimiEncoder.load()
+    }
+
+    /// Run MimiEncoder on `samples` and copy the result into a pre-allocated MLMultiArray.
+    /// All MLXArray work happens inside this nonisolated function so values never cross actor boundaries.
+    private nonisolated func runMimiEncoder(
+        samples: [Float],
+        maxFrames tVoiceMax: Int
+    ) throws -> (condArr: MLMultiArray, framesToCopy: Int) {
+        guard let encoder = mimiEncoder else {
+            throw EncoderError.modelNotFound("MimiEncoder not loaded")
+        }
+        // RMS normalize to -16 dB (matches Python _encode_audio's _normalize_audio_rms)
+        let normalized = Self.rmsNormalize(samples, targetDB: -16.0)
+        let audioMLX = MLXArray(normalized).reshaped(1, 1, normalized.count)
+        let conditioning = encoder.encode(audioMLX)
+        eval(conditioning)
+        let tFrames = conditioning.shape[1]
+        let condData0 = conditioning.asArray(Float.self)
+        let mean = condData0.reduce(0, +) / Float(condData0.count)
+        var sumSq: Float = 0
+        for v in condData0 { sumSq += (v - mean) * (v - mean) }
+        let std = sqrt(sumSq / Float(condData0.count))
+        let hasNaN = condData0.contains { $0.isNaN }
+        let hasInf = condData0.contains { $0.isInfinite }
+        print("[PocketTTSVoiceEncoder] MimiEncoder → \(tFrames) frames, mean=\(mean), std=\(std), NaN=\(hasNaN), Inf=\(hasInf)")
+
+        let framesToCopy = min(tFrames, tVoiceMax)
+        let condArr = try MLMultiArray(shape: [1, tVoiceMax as NSNumber, 1024], dataType: .float32)
+        let condData = conditioning.asArray(Float.self)
+        let condDst = condArr.dataPointer.assumingMemoryBound(to: Float.self)
+        condData.withUnsafeBufferPointer { src in
+            memcpy(condDst, src.baseAddress!, min(condData.count, framesToCopy * 1024) * MemoryLayout<Float>.size)
+        }
+        return (condArr, framesToCopy)
+    }
+
+    // MARK: - Encode voice
+
+    func encodeVoice(wavURL: URL, outputURL: URL) async throws {
+        guard mimiEncoder != nil, let phase = voicePhaseModel else {
             throw EncoderError.modelNotFound("Call bootstrap() first")
         }
 
-        // Step 1: Load + resample audio to 24kHz mono
-        let samples = try loadAudio(url: wavURL)
-        print("[PocketTTSVoiceEncoder] loaded \(samples.count) samples")
+        status = .encoding
 
-        // Step 2: Pad/trim to fixed size
-        var padded = [Float](repeating: 0, count: Self.fixedSamples)
-        let copyCount = min(samples.count, Self.fixedSamples)
-        padded.replaceSubrange(0..<copyCount, with: samples[0..<copyCount])
-        let voiceLength = min(copyCount / (Self.sampleRate / 12), Self.tVoiceMax)
+        // Step 1: Load audio → [Float]
+        let samples = try Self.loadAudio(url: wavURL)
+        print("[PocketTTSVoiceEncoder] loaded \(samples.count) samples @ 24kHz")
 
-        // Step 3: Run mimi_encoder
-        let audioArr = try MLMultiArray(shape: [1, 1, Self.fixedSamples as NSNumber], dataType: .float32)
-        padded.withUnsafeBufferPointer { src in
-            audioArr.dataPointer.assumingMemoryBound(to: Float.self)
-                .update(from: src.baseAddress!, count: Self.fixedSamples)
-        }
+        // Step 2 + 3: Run MimiEncoder (MLX) → padded MLMultiArray.
+        // All MLX types are created and consumed inside the nonisolated helper; no MLXArray
+        // crosses the actor boundary.
+        let (condArr, framesToCopy) = try runMimiEncoder(samples: samples, maxFrames: Self.tVoiceMax)
 
-        let encoderInput = try MLDictionaryFeatureProvider(dictionary: ["audio": audioArr])
-        let encoderOutput = try encoder.prediction(from: encoderInput)
-        guard let conditioning = encoderOutput.featureValue(for: "conditioning")?.multiArrayValue else {
-            throw EncoderError.encodeFailed("mimi_encoder returned no conditioning")
-        }
-        let tFrames = conditioning.shape[1].intValue
-        print("[PocketTTSVoiceEncoder] mimi_encoder → \(tFrames) frames")
-
-        // Step 4: Pad conditioning to T_VOICE_MAX
-        let condArr = try MLMultiArray(shape: [1, Self.tVoiceMax as NSNumber, 1024], dataType: .float32)
-        let condSrc = conditioning.dataPointer.assumingMemoryBound(to: Float.self)
-        let condDst = condArr.dataPointer.assumingMemoryBound(to: Float.self)
-        let framesToCopy = min(tFrames, Self.tVoiceMax)
-        memcpy(condDst, condSrc, framesToCopy * 1024 * MemoryLayout<Float>.size)
-
-        // Step 5: Run voice_prompt_phase (populates KV state)
+        // Step 4: Run voice_prompt_phase (Core ML) → KV cache
         let lengthArr = try MLMultiArray(shape: [1], dataType: .int32)
         lengthArr.dataPointer.assumingMemoryBound(to: Int32.self).pointee = Int32(framesToCopy)
 
@@ -105,31 +146,33 @@ actor PocketTTSVoiceEncoder {
             "conditioning": condArr,
             "voice_length": lengthArr,
         ])
-        let _ = try phase.prediction(from: phaseInput, using: phaseState)
+        _ = try await phase.prediction(from: phaseInput, using: phaseState)
 
-        // Step 6: Extract KV cache from state → save as safetensors
+        // Step 5: Extract KV cache → safetensors
         try saveKVState(state: phaseState, tVoice: framesToCopy, outputURL: outputURL)
-        print("[PocketTTSVoiceEncoder] saved KV state to \(outputURL.lastPathComponent)")
+
+        status = .ready
+        print("[PocketTTSVoiceEncoder] saved KV state → \(outputURL.lastPathComponent) (T_voice=\(framesToCopy))")
     }
 
-    // MARK: - Helpers
+    // MARK: - Audio loading
 
-    private func loadAudio(url: URL) throws -> [Float] {
+    private nonisolated static func loadAudio(url: URL) throws -> [Float] {
         let audioFile = try AVAudioFile(forReading: url)
         let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: Double(Self.sampleRate),
+            sampleRate: Double(sampleRate),
             channels: 1,
             interleaved: false
         )!
-        let maxFrames = AVAudioFrameCount(Self.maxSeconds * Self.sampleRate)
+        let maxFrames = AVAudioFrameCount(maxSeconds * sampleRate)
         let readFrames = min(AVAudioFrameCount(audioFile.length), maxFrames)
 
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: readFrames) else {
             throw EncoderError.encodeFailed("Cannot create audio buffer")
         }
 
-        if Int(audioFile.processingFormat.sampleRate) == Self.sampleRate
+        if Int(audioFile.processingFormat.sampleRate) == sampleRate
             && audioFile.processingFormat.channelCount == 1 {
             try audioFile.read(into: buffer, frameCount: readFrames)
         } else {
@@ -148,11 +191,19 @@ actor PocketTTSVoiceEncoder {
         return Array(UnsafeBufferPointer(start: data, count: Int(buffer.frameLength)))
     }
 
-    private func saveKVState(state: MLState, tVoice: Int, outputURL: URL) throws {
-        // Extract fp16 KV buffers from state and write as safetensors-compatible format.
-        // For now, write as individual .npy files in a directory, then combine.
-        // TODO: Write proper safetensors with metadata matching VoiceLoader expectations.
+    private nonisolated static func rmsNormalize(_ samples: [Float], targetDB: Float) -> [Float] {
+        var sumSq: Float = 0
+        for s in samples { sumSq += s * s }
+        let rms = sqrt(sumSq / Float(samples.count))
+        guard rms > 1e-8 else { return samples }
+        let targetRMS = pow(10, targetDB / 20.0)
+        let gain = targetRMS / rms
+        return samples.map { min(max($0 * gain, -1.0), 1.0) }
+    }
 
+    // MARK: - KV state output
+
+    private func saveKVState(state: MLState, tVoice: Int, outputURL: URL) throws {
         var kvData: [String: [Float16]] = [:]
         let bufferSize = Self.maxSeq * Self.nHeads * Self.dHead
 
@@ -172,21 +223,14 @@ actor PocketTTSVoiceEncoder {
             kvData["kv_v_\(i)"] = vBuf
         }
 
-        // Write safetensors format matching VoiceLoader expectations
         try writeSafetensors(kvData: kvData, tVoice: tVoice, to: outputURL)
     }
 
     private func writeSafetensors(kvData: [String: [Float16]], tVoice: Int, to url: URL) throws {
-        // Safetensors format:
-        //   8 bytes: uint64 LE header length
-        //   header: JSON dict with tensor metadata + __metadata__
-        //   data: packed tensor bytes
-
         let shape = [1, Self.maxSeq, Self.nHeads, Self.dHead]
         let bytesPerTensor = shape.reduce(1, *) * MemoryLayout<Float16>.size
         let sortedKeys = kvData.keys.sorted()
 
-        // Build header JSON
         var headerDict: [String: Any] = [:]
         var offset = 0
         for key in sortedKeys {
@@ -211,14 +255,10 @@ actor PocketTTSVoiceEncoder {
 
         let headerData = try JSONSerialization.data(withJSONObject: headerDict)
 
-        // Write file
         var fileData = Data()
-        // 8-byte header length (little-endian uint64)
         var headerLen = UInt64(headerData.count)
         fileData.append(Data(bytes: &headerLen, count: 8))
-        // Header JSON
         fileData.append(headerData)
-        // Tensor data
         for key in sortedKeys {
             guard let buf = kvData[key] else { continue }
             buf.withUnsafeBufferPointer { ptr in
@@ -228,14 +268,12 @@ actor PocketTTSVoiceEncoder {
 
         try fileData.write(to: url, options: .atomic)
     }
-}
 
-// MARK: - ModelPaths extension
+    // MARK: - Bundle helpers
 
-extension ModelPaths {
-    static func url(forResource name: String, withExtension ext: String) throws -> URL {
+    private nonisolated static func bundleURL(forResource name: String, withExtension ext: String) throws -> URL {
         guard let url = Bundle.main.url(forResource: name, withExtension: ext) else {
-            throw PocketTTSVoiceEncoder.EncoderError.modelNotFound("\(name).\(ext)")
+            throw EncoderError.modelNotFound("\(name).\(ext) not in bundle")
         }
         return url
     }

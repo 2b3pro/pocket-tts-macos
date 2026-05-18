@@ -135,8 +135,15 @@ actor TTSEngine: TTSEngineProtocol {
         options: SynthesisOptions,
         continuation: AsyncStream<PCMFrame>.Continuation
     ) throws {
-        guard let voice = voices[voiceID] else {
-            throw TTSEngineError.voiceNotFound(voiceID)
+        let voice: LoadedVoice
+        if voiceID.hasPrefix("imported:") {
+            let importID = String(voiceID.dropFirst("imported:".count))
+            voice = try loadImportedVoice(importID: importID)
+        } else {
+            guard let bundled = voices[voiceID] else {
+                throw TTSEngineError.voiceNotFound(voiceID)
+            }
+            voice = bundled
         }
 
         let normalized = TextNormalizer.normalize(text)
@@ -214,6 +221,48 @@ actor TTSEngine: TTSEngineProtocol {
             format: "TTSEngine: produced %d frames, %.2fs audio in %.2fs (%.1f fps; real-time = 12.5 fps)\n",
             produced, audioSec, elapsed, fps
         ).utf8))
+    }
+
+    // MARK: - Imported voice loading
+
+    private var importedVoiceCache: [String: LoadedVoice] = [:]
+
+    private func loadImportedVoice(importID: String) throws -> LoadedVoice {
+        if let cached = importedVoiceCache[importID] { return cached }
+
+        // Read the persisted KV path from the voice catalog JSON on disk.
+        // Can't access @MainActor FishVoiceManager from this actor, so we
+        // parse the catalog file directly.
+        let kvPath = try Self.findImportedVoiceKVPath(importID: importID)
+
+        let voice = try VoiceLoader.loadVoice(from: kvPath)
+        importedVoiceCache[importID] = voice
+        print("[TTSEngine] loaded imported voice \(importID) (T_voice=\(voice.tVoice))")
+        return voice
+    }
+
+    private nonisolated static func findImportedVoiceKVPath(importID: String) throws -> URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let catalogURL = appSupport.appendingPathComponent("pocket-tts-macos/fish-voices/voices.json")
+
+        // Try reading persisted path from catalog
+        if let data = try? Data(contentsOf: catalogURL) {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            if let voices = try? decoder.decode([FishVoice].self, from: data),
+               let voice = voices.first(where: { $0.id == importID }),
+               let kvPath = voice.pocketTTSKVPath,
+               FileManager.default.fileExists(atPath: kvPath) {
+                return URL(fileURLWithPath: kvPath)
+            }
+        }
+
+        // Fallback to conventional path
+        let fallback = appSupport.appendingPathComponent("pocket-tts-macos/fish-voices/\(importID)_kv.safetensors")
+        guard FileManager.default.fileExists(atPath: fallback.path) else {
+            throw TTSEngineError.voiceNotFound("imported:\(importID) — KV not found")
+        }
+        return fallback
     }
 
     // MARK: - Text splitting

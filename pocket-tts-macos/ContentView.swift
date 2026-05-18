@@ -82,18 +82,31 @@ struct ContentView: View {
         .sheet(isPresented: $appState.showsVoiceManager) {
             VoiceManagerView(
                 isPresented: $appState.showsVoiceManager,
-                pocketTTSVoices: voices,
                 onEncodeVoice: { voiceID in
                     Task {
-                        guard let fish = appState.fishEngine else {
-                            print("[ContentView] encode skipped — fishEngine is nil")
-                            return
+                        // Fish codec encode (bootstrap lazily if needed)
+                        if let fish = appState.fishEngine {
+                            await appState.bootstrapFishIfNeeded()
+                            do {
+                                try await fish.encodeVoice(voiceID: voiceID)
+                                print("[ContentView] Fish encode complete for \(voiceID)")
+                            } catch {
+                                print("[ContentView] Fish encode failed: \(error)")
+                            }
                         }
-                        do {
-                            try await fish.encodeVoice(voiceID: voiceID)
-                            print("[ContentView] encode complete for \(voiceID)")
-                        } catch {
-                            print("[ContentView] encode failed: \(error)")
+                        // Pocket-TTS KV bake
+                        let pttsEncoder = PocketTTSVoiceEncoder.shared
+                        await pttsEncoder.bootstrap()
+                        if let wavURL = FishVoiceManager.shared.wavURL(for: voiceID) {
+                            let kvDir = FishVoiceManager.shared.codesDir()
+                            let kvURL = kvDir.appendingPathComponent("\(voiceID)_kv.safetensors")
+                            do {
+                                try await pttsEncoder.encodeVoice(wavURL: wavURL, outputURL: kvURL)
+                                FishVoiceManager.shared.setPocketTTSKVPath(kvURL.path, for: voiceID)
+                                print("[ContentView] Pocket-TTS KV bake complete for \(voiceID)")
+                            } catch {
+                                print("[ContentView] Pocket-TTS KV bake failed: \(error)")
+                            }
                         }
                     }
                 },
@@ -111,16 +124,30 @@ struct ContentView: View {
                             print("[VoiceEnhancer] enhance failed: \(error)")
                         }
 
-                        // Step 2: Codec encode (sequential — runs after enhance completes)
-                        guard let fish = appState.fishEngine else {
-                            print("[ContentView] encode skipped — fishEngine is nil")
-                            return
+                        // Step 2: Fish codec encode (bootstrap lazily if needed)
+                        if let fish = appState.fishEngine {
+                            await appState.bootstrapFishIfNeeded()
+                            do {
+                                try await fish.encodeVoice(voiceID: voiceID)
+                                print("[ContentView] Fish encode complete for \(voiceID)")
+                            } catch {
+                                print("[ContentView] Fish encode failed: \(error)")
+                            }
                         }
-                        do {
-                            try await fish.encodeVoice(voiceID: voiceID)
-                            print("[ContentView] encode complete for \(voiceID)")
-                        } catch {
-                            print("[ContentView] encode failed: \(error)")
+
+                        // Step 3: Pocket-TTS KV state bake
+                        let pttsEncoder = PocketTTSVoiceEncoder.shared
+                        await pttsEncoder.bootstrap()
+                        if let wavURL = FishVoiceManager.shared.wavURL(for: voiceID) {
+                            let kvDir = FishVoiceManager.shared.codesDir()
+                            let kvURL = kvDir.appendingPathComponent("\(voiceID)_kv.safetensors")
+                            do {
+                                try await pttsEncoder.encodeVoice(wavURL: wavURL, outputURL: kvURL)
+                                FishVoiceManager.shared.setPocketTTSKVPath(kvURL.path, for: voiceID)
+                                print("[ContentView] Pocket-TTS KV bake complete for \(voiceID)")
+                            } catch {
+                                print("[ContentView] Pocket-TTS KV bake failed: \(error)")
+                            }
                         }
                     }
                 }
