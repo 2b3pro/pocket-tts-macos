@@ -189,7 +189,22 @@ actor TTSEngine: TTSEngineProtocol {
                 break
             }
             if chunks.count > 1 { print("[PocketTTS] chunk \(i + 1)/\(chunks.count)") }
-            try runSynthesisChunk(text: chunk, voice: voice, options: options, continuation: continuation, cancel: cancel)
+            // `isLastChunk` propagates through to the AR loop so that
+            // `PCMFrame.isFinal` is only set on the absolute last frame
+            // of the whole synthesize call, not on every chunk's post-EOS
+            // tail. Pre-fix, Single Voice's consumer broke its for-await
+            // loop on chunk 1's `isFinal=true` frame and the engine kept
+            // running chunks 2..N until the cancellation eventually
+            // propagated mid-chunk-4 (per the user's console log).
+            let isLastChunk = i == chunks.count - 1
+            try runSynthesisChunk(
+                text: chunk,
+                voice: voice,
+                options: options,
+                continuation: continuation,
+                cancel: cancel,
+                isLastChunk: isLastChunk
+            )
         }
 
         let wallTotal = CFAbsoluteTimeGetCurrent() - wallStart
@@ -202,7 +217,8 @@ actor TTSEngine: TTSEngineProtocol {
         voice: LoadedVoice,
         options: SynthesisOptions,
         continuation: AsyncStream<PCMFrame>.Continuation,
-        cancel: CancellationFlag
+        cancel: CancellationFlag,
+        isLastChunk: Bool
     ) throws {
         // Per-chunk text prep (P0-3): collapse whitespace, capitalize first,
         // ensure terminal punctuation, pad short prompts. Also yields the
@@ -270,7 +286,16 @@ actor TTSEngine: TTSEngineProtocol {
             )
 
             produced = step + 1
-            let final = isEos && eosStep == nil ? false : (eosStep.map { step >= $0 + chunkOptions.framesAfterEOS } ?? false)
+            // `isFinal` is a stream-wide signal — only the absolute last
+            // frame of the whole synthesize call gets it. Per-chunk EOS
+            // tails are NOT final; the stream continues with the next
+            // chunk's prompt + AR loop. `StreamingPlayer` uses isFinal
+            // to schedule its drain callback (once per `play(stream:)`),
+            // so emitting it per-chunk would fire that callback multiple
+            // times — and SingleVoiceViewModel breaks its for-await on
+            // isFinal=true. Both wrong before the gate. See plan file.
+            let isAtFinalChunkFrame = eosStep.map { step >= $0 + chunkOptions.framesAfterEOS } ?? false
+            let final = isLastChunk && isAtFinalChunkFrame
             continuation.yield(PCMFrame(samples: pcm, isFinal: final))
 
             if isEos && eosStep == nil { eosStep = step }
