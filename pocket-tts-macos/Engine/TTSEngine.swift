@@ -383,6 +383,42 @@ actor TTSEngine: TTSEngineProtocol {
         return out
     }
 
+    /// Apply a linear fade ramp across a slice of a multi-frame tail
+    /// region to the supplied frame's samples. Used by the AR loop to
+    /// taper the EOS frame + post-EOS tail across multiple PCMFrame
+    /// yields. The total ramp spans `totalTailFrames * samples.count`
+    /// samples — gain is 1.0 at sample 0 of the EOS frame and 0.0 at
+    /// the last sample of the final tail frame; everything between
+    /// linearly interpolates.
+    ///
+    ///   * `framesIntoTail` — index of this frame within the tail
+    ///     region. 0 = the EOS-detection frame itself.
+    ///   * `totalTailFrames` — total frame count in the tail region.
+    ///     `framesAfterEOS + 1` (EOS frame + N trailing).
+    ///
+    /// Returns input unchanged if `totalTailFrames <= 1` or the
+    /// frame index is out of range.
+    nonisolated static func applyTailFade(
+        _ samples: [Float],
+        framesIntoTail: Int,
+        totalTailFrames: Int
+    ) -> [Float] {
+        guard totalTailFrames > 1, framesIntoTail >= 0, framesIntoTail < totalTailFrames else {
+            return samples
+        }
+        let perFrame = samples.count
+        let totalSamples = totalTailFrames * perFrame
+        let baseGlobal = framesIntoTail * perFrame
+        let denom = Float(totalSamples - 1)
+        var out = samples
+        for i in 0..<perFrame {
+            let globalIdx = baseGlobal + i
+            let gain = 1.0 - Float(globalIdx) / denom
+            out[i] *= gain
+        }
+        return out
+    }
+
     nonisolated static func applyLinearFadeOut(_ samples: [Float], fadeSamples: Int) -> [Float] {
         let n = min(fadeSamples, samples.count)
         if n <= 0 { return samples }
@@ -487,11 +523,40 @@ actor TTSEngine: TTSEngineProtocol {
             // so emitting it per-chunk would fire that callback multiple
             // times — and SingleVoiceViewModel breaks its for-await on
             // isFinal=true. Both wrong before the gate. See plan file.
+            // Record EOS BEFORE the yield so the EOS-detection frame
+            // itself is part of the tail-fade region (rather than
+            // emitting it at full amplitude and only fading the
+            // strictly post-EOS frames). Behavior is otherwise
+            // identical to setting eosStep after the yield.
+            if isEos && eosStep == nil { eosStep = step }
+
             let isAtFinalChunkFrame = eosStep.map { step >= $0 + chunkOptions.framesAfterEOS } ?? false
             let final = isLastChunk && isAtFinalChunkFrame
-            yield(PCMFrame(samples: pcm, isFinal: final))
 
-            if isEos && eosStep == nil { eosStep = step }
+            // P-EOS-1: tail-fade mitigation for the CaLM eos_logit
+            // perturbation under Core ML fp16 state. Per the conversion
+            // project's EOS-margin investigation (FP16_AR_DRIFT.md item
+            // #4 follow-up), the Core ML model fires EOS ~3 frames
+            // earlier than the fp32 reference and the perturbation
+            // isn't biased one direction — early-firing leaves
+            // cut-off articulation, late-firing leaves post-EOS noise.
+            // A linear 1.0 → 0.0 ramp across the entire tail region
+            // (EOS frame + framesAfterEOS trailing frames) smooths
+            // the cutoff in either direction without changing how
+            // many frames we emit (still matches upstream Python).
+            let totalTailFrames = chunkOptions.framesAfterEOS + 1
+            let pcmToYield: [Float]
+            if let e = eosStep {
+                pcmToYield = Self.applyTailFade(
+                    pcm,
+                    framesIntoTail: step - e,
+                    totalTailFrames: totalTailFrames
+                )
+            } else {
+                pcmToYield = pcm
+            }
+            yield(PCMFrame(samples: pcmToYield, isFinal: final))
+
             if let e = eosStep, step >= e + chunkOptions.framesAfterEOS { break }
             prevLatent = nextLatent
         }
