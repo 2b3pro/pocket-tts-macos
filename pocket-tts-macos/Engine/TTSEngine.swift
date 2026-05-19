@@ -368,7 +368,7 @@ actor TTSEngine: TTSEngineProtocol {
     // sample frame), the very first sample is multiplied by 0 and the
     // very last by 1 on fade-in (and reversed on fade-out).
 
-    private nonisolated static func applyLinearFadeIn(_ samples: [Float], fadeSamples: Int) -> [Float] {
+    nonisolated static func applyLinearFadeIn(_ samples: [Float], fadeSamples: Int) -> [Float] {
         let n = min(fadeSamples, samples.count)
         if n <= 0 { return samples }
         var out = samples
@@ -383,7 +383,7 @@ actor TTSEngine: TTSEngineProtocol {
         return out
     }
 
-    private nonisolated static func applyLinearFadeOut(_ samples: [Float], fadeSamples: Int) -> [Float] {
+    nonisolated static func applyLinearFadeOut(_ samples: [Float], fadeSamples: Int) -> [Float] {
         let n = min(fadeSamples, samples.count)
         if n <= 0 { return samples }
         var out = samples
