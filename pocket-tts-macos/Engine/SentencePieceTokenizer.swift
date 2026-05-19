@@ -74,10 +74,18 @@ nonisolated struct SentencePieceTokenizer: Tokenizer {
 
     private let pieceToID: [String: Int32]
     private let pieceToScore: [String: Float]
+    /// Reverse of `pieceToID`. Indexed by token ID; `nil` for sparse holes.
+    /// Used by `decodeIDs` to reconstruct text from token IDs.
+    private let idToPiece: [String?]
     /// Pre-cached scores for byte-fallback pieces `<0x00>` through `<0xFF>`,
     /// indexed by byte value. `nil` entries fall back to `<unk>` (id 0).
     private let byteFallbackIDs: [Int32?]
     private let byteFallbackScores: [Float?]
+    /// Token IDs corresponding to the SentencePiece end-of-sentence
+    /// punctuation pieces (`.`, `!`, `...`, `?` and their leading-space
+    /// variants). Computed once at init; consumed by the sentence-aware
+    /// chunker in `TTSEngine`.
+    let endOfSentenceTokenIDs: Set<Int32>
 
     init() throws {
         guard let url = Bundle.main.url(forResource: "tokenizer_vocab", withExtension: "json") else {
@@ -110,6 +118,14 @@ nonisolated struct SentencePieceTokenizer: Tokenizer {
             self.pieceToID = pieceToID
             self.pieceToScore = pieceToScore
 
+            // Build idToPiece. Sparse — use the max id we saw + 1 as size.
+            let maxID = pieceToID.values.max().map(Int.init) ?? -1
+            var idToPiece = [String?](repeating: nil, count: maxID + 1)
+            for (piece, id) in pieceToID {
+                idToPiece[Int(id)] = piece
+            }
+            self.idToPiece = idToPiece
+
             var idsByByte = [Int32?](repeating: nil, count: 256)
             var scoresByByte = [Float?](repeating: nil, count: 256)
             for b in 0..<256 {
@@ -121,11 +137,143 @@ nonisolated struct SentencePieceTokenizer: Tokenizer {
             }
             self.byteFallbackIDs = idsByByte
             self.byteFallbackScores = scoresByByte
+
+            // EOS-class token IDs: mirror Python's `_, *eos = sp(".!...?")`.
+            // Tokenize the punctuation sentinel string, drop the leading
+            // space-marker token, the remainder are the EOS-class tokens.
+            // Run the static viterbi here because `self` isn't fully formed
+            // yet — `endOfSentenceTokenIDs` is the final stored property.
+            let eosTokens = Self.viterbiEncode(
+                normalized: Self.normalize(".!...?"),
+                pieceToScore: pieceToScore,
+                pieceToID: pieceToID,
+                byteFallbackIDs: idsByByte,
+                byteFallbackScores: scoresByByte
+            )
+            self.endOfSentenceTokenIDs = Set(eosTokens.dropFirst())
         } catch let e as LoadError {
             throw e
         } catch {
             throw LoadError.vocabDecodeFailed(error)
         }
+    }
+
+    // MARK: - Raw encode / decode (for internal pipeline use)
+
+    /// Encode `text` to a raw, unpadded token-ID sequence. Used by the
+    /// sentence-aware chunker; the protocol's `encode(_:paddedLength:)`
+    /// remains the public interface for the engine.
+    func encodeIDs(_ text: String) -> [Int32] {
+        viterbiEncode(Self.normalize(text))
+    }
+
+    /// Decode a token-ID sequence back to text using SentencePiece's
+    /// canonical rules: concatenate pieces, collapse `<0xXX>` runs into
+    /// UTF-8 bytes, replace `▁` with space, strip the leading space added
+    /// by `add_dummy_prefix=true`.
+    func decodeIDs(_ ids: [Int32]) -> String {
+        var pieces = ""
+        var byteBuf: [UInt8] = []
+
+        func flushBytes() {
+            guard !byteBuf.isEmpty else { return }
+            if let s = String(bytes: byteBuf, encoding: .utf8) {
+                pieces += s
+            }
+            byteBuf.removeAll()
+        }
+
+        for id in ids {
+            let idx = Int(id)
+            guard idx >= 0, idx < idToPiece.count, let piece = idToPiece[idx] else {
+                flushBytes()
+                continue
+            }
+            // Byte-fallback piece detection: `<0xXX>` form.
+            if piece.count == 6, piece.hasPrefix("<0x"), piece.hasSuffix(">"),
+               let byte = UInt8(piece.dropFirst(3).dropLast(1), radix: 16) {
+                byteBuf.append(byte)
+                continue
+            }
+            flushBytes()
+            pieces += piece
+        }
+        flushBytes()
+
+        var text = pieces.replacingOccurrences(of: Self.spaceMarkerString, with: " ")
+        if text.hasPrefix(" ") { text.removeFirst() }
+        return text
+    }
+
+    // MARK: - Sentence-aware chunking
+
+    /// Port of Python `split_into_best_sentences` (tts_model.py:857).
+    /// Tokenizes the whole input once, finds sentence boundaries by looking
+    /// for non-EOS tokens that follow a run of EOS tokens, decodes each
+    /// sentence slice back to text, then greedily packs consecutive
+    /// sentences into chunks of at most `maxTokensPerChunk` tokens.
+    ///
+    /// Returns an empty array if `text` tokenizes to nothing; callers
+    /// typically fall back to `[text]` in that case so the engine still
+    /// receives something to synthesize.
+    func splitIntoBestSentences(_ text: String, maxTokensPerChunk: Int = 50) -> [String] {
+        let tokens = encodeIDs(text)
+        if tokens.isEmpty { return [] }
+
+        // Sentence-boundary detection. Mirrors Python's behaviour: a
+        // boundary lives at the position where a non-EOS token follows
+        // one or more consecutive EOS tokens. This handles "..." (which
+        // tokenizes to multiple pieces) and "??" the same way Python does.
+        var boundaries: [Int] = [0]
+        var prevWasEOS = false
+        for (idx, tok) in tokens.enumerated() {
+            if endOfSentenceTokenIDs.contains(tok) {
+                prevWasEOS = true
+            } else {
+                if prevWasEOS { boundaries.append(idx) }
+                prevWasEOS = false
+            }
+        }
+        boundaries.append(tokens.count)
+
+        // Decode each slice and remember its token cost.
+        struct Sentence { let tokenCount: Int; let text: String }
+        var sentences: [Sentence] = []
+        sentences.reserveCapacity(boundaries.count - 1)
+        for i in 0..<(boundaries.count - 1) {
+            let start = boundaries[i]
+            let end = boundaries[i + 1]
+            guard end > start else { continue }
+            let decoded = decodeIDs(Array(tokens[start..<end]))
+            sentences.append(Sentence(tokenCount: end - start, text: decoded))
+        }
+
+        // Greedy pack. A single sentence longer than the budget gets its
+        // own chunk (matches Python — the budget is a packing target, not
+        // a hard ceiling). The 128-token hard limit is enforced separately
+        // by the engine when tokenizing each chunk for synthesis.
+        var chunks: [String] = []
+        var current = ""
+        var currentTokens = 0
+        for s in sentences {
+            if current.isEmpty {
+                current = s.text
+                currentTokens = s.tokenCount
+                continue
+            }
+            if currentTokens + s.tokenCount > maxTokensPerChunk {
+                chunks.append(current.trimmingCharacters(in: .whitespaces))
+                current = s.text
+                currentTokens = s.tokenCount
+            } else {
+                current += " " + s.text
+                currentTokens += s.tokenCount
+            }
+        }
+        if !current.isEmpty {
+            chunks.append(current.trimmingCharacters(in: .whitespaces))
+        }
+        return chunks
     }
 
     // MARK: - Tokenizer
@@ -170,6 +318,24 @@ nonisolated struct SentencePieceTokenizer: Tokenizer {
     /// pieces (with byte-fallback for characters not directly in vocab) and
     /// return the resulting token IDs in order.
     private func viterbiEncode(_ normalized: String) -> [Int32] {
+        Self.viterbiEncode(
+            normalized: normalized,
+            pieceToScore: pieceToScore,
+            pieceToID: pieceToID,
+            byteFallbackIDs: byteFallbackIDs,
+            byteFallbackScores: byteFallbackScores
+        )
+    }
+
+    /// Static implementation so `init` can compute EOS tokens before all
+    /// stored properties have been bound to `self`.
+    private static func viterbiEncode(
+        normalized: String,
+        pieceToScore: [String: Float],
+        pieceToID: [String: Int32],
+        byteFallbackIDs: [Int32?],
+        byteFallbackScores: [Float?]
+    ) -> [Int32] {
         if normalized.isEmpty { return [] }
 
         // Work over Unicode scalars rather than Character grapheme clusters
@@ -196,7 +362,7 @@ nonisolated struct SentencePieceTokenizer: Tokenizer {
 
             // Try every piece length starting at i, up to the cap.
             var pieceBuilder = ""
-            let maxLen = min(n - i, Self.maxPieceLengthScalars)
+            let maxLen = min(n - i, maxPieceLengthScalars)
             for length in 1...maxLen {
                 pieceBuilder.append(scalarStrings[i + length - 1])
                 let end = i + length

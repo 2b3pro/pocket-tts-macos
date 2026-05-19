@@ -5,7 +5,6 @@
 
 import CoreML
 import Foundation
-import NaturalLanguage
 
 // MARK: - PCMFrame
 /// 80 ms of mono PCM @ 24 kHz (1920 samples). The unit Mimi emits per
@@ -62,6 +61,15 @@ private nonisolated enum K {
     static let tTextMax = 128
     static let mimiOffsetPerFrame: Int32 = 16
     static let mimiPCMPerFrame = 1920
+
+    /// Per-chunk SentencePiece-token budget for the sentence-aware
+    /// splitter. Matches Python `max_nb_tokens_in_a_chunk = 50` in
+    /// `split_into_best_sentences` — empirically tuned to keep
+    /// cumulative AR error from compounding at the back end of long
+    /// generations. Smaller than the model's 128-token hard limit on
+    /// purpose; packing fewer tokens per chunk gives noticeably better
+    /// prosody on multi-sentence input.
+    static let chunkTokenBudget = 50
 }
 
 // MARK: - TTSEngine
@@ -295,43 +303,16 @@ actor TTSEngine: TTSEngineProtocol {
 
     // MARK: - Text splitting
 
-    /// Split `text` into chunks that each fit within the 128-token limit.
-    /// Short text returns as a single-element array (fast path).
+    /// Split `text` into chunks suitable for separate AR generations.
+    /// Uses the SentencePiece-aware chunker for `SentencePieceTokenizer`;
+    /// falls back to a single chunk for the test-only `FixedPhraseTokenizer`
+    /// (its phrase is already small enough to fit).
     private func splitForTokenLimit(_ text: String) -> [String] {
-        if fitsInTokenLimit(text) { return [text] }
-
-        let sentences = Self.splitIntoSentences(text)
-
-        // Greedily pack consecutive sentences into the largest chunks that fit.
-        var chunks: [String] = []
-        var current = ""
-        for sentence in sentences {
-            let candidate = current.isEmpty ? sentence : current + " " + sentence
-            if fitsInTokenLimit(candidate) {
-                current = candidate
-            } else {
-                if !current.isEmpty { chunks.append(current) }
-                current = sentence
-            }
+        if let sp = tokenizer as? SentencePieceTokenizer {
+            let chunks = sp.splitIntoBestSentences(text, maxTokensPerChunk: K.chunkTokenBudget)
+            return chunks.isEmpty ? [text] : chunks
         }
-        if !current.isEmpty { chunks.append(current) }
-        return chunks.isEmpty ? [text] : chunks
-    }
-
-    private func fitsInTokenLimit(_ text: String) -> Bool {
-        (try? tokenizer.encode(text, paddedLength: K.tTextMax)) != nil
-    }
-
-    private nonisolated static func splitIntoSentences(_ text: String) -> [String] {
-        let tok = NLTokenizer(unit: .sentence)
-        tok.string = text
-        var result: [String] = []
-        tok.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
-            let s = String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !s.isEmpty { result.append(s) }
-            return true
-        }
-        return result.isEmpty ? [text] : result
+        return [text]
     }
 
     // MARK: - State seeding
