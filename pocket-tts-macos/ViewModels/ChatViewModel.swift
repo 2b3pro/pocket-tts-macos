@@ -91,6 +91,15 @@ final class ChatViewModel {
         LocalLLMClient(baseURL: URL(string: appState.currentEndpointBaseURL) ?? Self.fallbackURL)
     }
 
+    /// Resolve the currently-active chat SystemPrompt's content from
+    /// SwiftData. Falls back to the legacy `settings.systemPrompt` if
+    /// the context isn't set yet (which would only happen if `send()`
+    /// fired before `ContentView.onAppear` — defensive guard).
+    private func currentChatSystemPrompt() -> String {
+        guard let ctx = appState.modelContext else { return settings.systemPrompt }
+        return AppDataStore.activePrompt(ctx, scope: .chat)?.content ?? ""
+    }
+
     /// Build the per-call options, pulling user-tunable values (chunk
     /// budget) live from AppState.
     private func currentSynthesisOptions() -> SynthesisOptions {
@@ -143,6 +152,13 @@ final class ChatViewModel {
         // Sentence queue: LLM-side appends, TTS-side consumes.
         let (sentenceStream, sentenceCont) = AsyncStream<String>.makeStream(of: String.self)
 
+        // Snapshot the active chat prompt's content before we hop into
+        // the detached Task — the SwiftData read needs MainActor and
+        // we want the request to use whatever the active prompt was at
+        // the moment the user hit Send (subsequent edits don't apply
+        // retroactively to in-flight requests).
+        let systemPromptSnapshot = currentChatSystemPrompt()
+
         // 1) LLM streaming task — pulls tokens, runs the sentence detector,
         //    appends content to the assistant message, enqueues sentences.
         llmTask = Task { [weak self, settings] in
@@ -151,7 +167,7 @@ final class ChatViewModel {
             let stream = self.makeClient().streamChat(
                 messages: self.messagesForRequest(),
                 model: settings.model.isEmpty ? model : settings.model,
-                systemPrompt: settings.systemPrompt
+                systemPrompt: systemPromptSnapshot
             )
             do {
                 for try await delta in stream {

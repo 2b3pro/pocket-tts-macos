@@ -9,6 +9,7 @@
 //  which is only triggered by the Chat tab's own gear button because
 //  these fields don't apply outside the Chat context.
 
+import SwiftData
 import SwiftUI
 
 struct ChatSettingsView: View {
@@ -18,6 +19,7 @@ struct ChatSettingsView: View {
     let onSave: (ChatSettings) -> Void
 
     @State private var workingCopy: ChatSettings
+    @State private var showsPromptManager = false
 
     init(
         isPresented: Binding<Bool>,
@@ -42,6 +44,9 @@ struct ChatSettingsView: View {
                 actions
             }
             .frame(maxWidth: 560)
+        }
+        .sheet(isPresented: $showsPromptManager) {
+            PromptManagerSheet(isPresented: $showsPromptManager, scope: .chat)
         }
     }
 
@@ -83,20 +88,14 @@ struct ChatSettingsView: View {
 
     private var systemPromptSection: some View {
         VStack(alignment: .leading, spacing: Theme.space3) {
-            Text("System Prompt (optional)")
+            Text("System Prompt")
                 .font(Theme.fontSMBold)
                 .foregroundStyle(Theme.textPrimary)
-            Text("Sent as the first system message in every conversation.")
+            Text("Sent as the first system message in every conversation. Pick from saved prompts or open the editor to rename / add / duplicate.")
                 .font(Theme.fontXS)
                 .foregroundStyle(Theme.textSecondary)
-            TextEditor(text: $workingCopy.systemPrompt)
-                .font(Theme.fontSM)
-                .foregroundStyle(Theme.textPrimary)
-                .scrollContentBackground(.hidden)
-                .padding(Theme.space3)
-                .frame(minHeight: 80, maxHeight: 160)
-                .themeInputField()
-                .accessibilityIdentifier("chatSettings.systemPrompt")
+                .fixedSize(horizontal: false, vertical: true)
+            ActivePromptPicker(scope: .chat, showsManager: $showsPromptManager)
         }
     }
 

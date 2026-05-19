@@ -26,7 +26,7 @@ struct ScriptGeneratorModal: View {
     @State private var generator = ScriptGenerator()
     @State private var prompt: String = ""
     @State private var speakerCount: Int = 2
-    @State private var showSystemPrompt = false
+    @State private var showsPromptManager = false
 
     var body: some View {
         ModalContainer(title: modalTitle, onClose: dismiss) {
@@ -43,6 +43,14 @@ struct ScriptGeneratorModal: View {
             .frame(maxWidth: 560)
         }
         .task { await generator.checkConnection(settings: chatSettings, baseURL: currentEndpointBaseURL()) }
+        .sheet(isPresented: $showsPromptManager) {
+            PromptManagerSheet(isPresented: $showsPromptManager, scope: promptScope)
+        }
+    }
+
+    /// Map the generator's mode onto the SwiftData `PromptScope`.
+    private var promptScope: PromptScope {
+        mode == .singleVoice ? .singleVoice : .multiTalk
     }
 
     /// Pull the user-configured LLM endpoint URL from SwiftData. Reads
@@ -52,6 +60,17 @@ struct ScriptGeneratorModal: View {
         AppDataStore
             .loadOrSeedEndpoint(modelContext, fallbackBaseURL: chatSettings.baseURL)
             .baseURL
+    }
+
+    /// Fetch the active SystemPrompt's content for this modal's scope.
+    /// Falls back to the hardcoded default if none is marked active
+    /// (shouldn't happen after first-launch migration but keeps the
+    /// generator from sending an empty system prompt).
+    private func activePromptContent() -> String {
+        if let active = AppDataStore.activePrompt(modelContext, scope: promptScope) {
+            return active.content
+        }
+        return PromptManagerSheet.hardcodedDefault(for: promptScope)
     }
 
     // MARK: - Title
@@ -111,41 +130,10 @@ struct ScriptGeneratorModal: View {
     // MARK: - System prompt
 
     private var systemPromptSection: some View {
-        VStack(alignment: .leading, spacing: Theme.space2) {
-            HStack {
-                Button(action: { withAnimation(.easeInOut(duration: 0.15)) { showSystemPrompt.toggle() } }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: showSystemPrompt ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 10))
-                        Text("System Prompt")
-                            .font(Theme.fontXS)
-                    }
-                    .foregroundStyle(Theme.textSecondary)
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-
-                if showSystemPrompt && currentPrompt != defaultPrompt {
-                    Button("Reset") {
-                        setCurrentPrompt(defaultPrompt)
-                    }
-                    .font(Theme.fontXS)
-                    .foregroundStyle(Theme.accent)
-                    .buttonStyle(.plain)
-                }
-            }
-
-            if showSystemPrompt {
-                TextEditor(text: systemPromptBinding)
-                    .font(Theme.fontSM)
-                    .foregroundStyle(Theme.textPrimary)
-                    .scrollContentBackground(.hidden)
-                    .padding(Theme.space3)
-                    .frame(minHeight: 80, maxHeight: 140)
-                    .themeInputField()
-            }
-        }
+        // Picker over the SwiftData-backed prompt presets for this
+        // scope; opens the PromptManagerSheet for full CRUD. Active
+        // selection is what gets passed to the generator below.
+        ActivePromptPicker(scope: promptScope, showsManager: $showsPromptManager)
     }
 
     // MARK: - Generate button
@@ -157,7 +145,8 @@ struct ScriptGeneratorModal: View {
                 mode: mode,
                 speakerCount: speakerCount,
                 settings: chatSettings,
-                baseURL: currentEndpointBaseURL()
+                baseURL: currentEndpointBaseURL(),
+                systemPromptContent: activePromptContent()
             )
         }) {
             HStack(spacing: Theme.space2) {
@@ -242,29 +231,12 @@ struct ScriptGeneratorModal: View {
 
     private func dismiss() {
         generator.cancel()
+        // chatSettings is no longer the system-prompt store — saves
+        // happen on every keystroke via SwiftData autosave from the
+        // PromptManagerSheet. Still persist the rest of chatSettings
+        // (model name, voice selections) in case anything changed
+        // through other binds during this modal's lifetime.
         SettingsStore.save(chatSettings)
         isPresented = false
-    }
-
-    private var currentPrompt: String {
-        mode == .singleVoice ? chatSettings.singleVoiceSystemPrompt : chatSettings.multiTalkSystemPrompt
-    }
-
-    private var defaultPrompt: String {
-        mode == .singleVoice ? ChatSettings.defaultSingleVoicePrompt : ChatSettings.defaultMultiTalkPrompt
-    }
-
-    private func setCurrentPrompt(_ value: String) {
-        if mode == .singleVoice {
-            chatSettings.singleVoiceSystemPrompt = value
-        } else {
-            chatSettings.multiTalkSystemPrompt = value
-        }
-    }
-
-    private var systemPromptBinding: Binding<String> {
-        mode == .singleVoice
-            ? $chatSettings.singleVoiceSystemPrompt
-            : $chatSettings.multiTalkSystemPrompt
     }
 }
