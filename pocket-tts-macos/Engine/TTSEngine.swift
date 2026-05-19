@@ -86,6 +86,31 @@ private nonisolated enum K {
     /// purpose; packing fewer tokens per chunk gives noticeably better
     /// prosody on multi-sentence input.
     static let chunkTokenBudget = 50
+
+    /// EOS-decision smoothing (P-EOS-2). The Core ML CaLM model exposes
+    /// the raw `eos_logit` as a third output post the conversion-side
+    /// rebuild that addressed fp16 AR drift. The CaLM model uses an
+    /// internal threshold of -4.0 (matching `is_eos`), but the fp16-
+    /// perturbed logit can spike above threshold transiently before
+    /// settling — the canonical apples-to-apples trace showed CM's
+    /// single-frame "fire" at step 32 while the fp32 reference didn't
+    /// fire until step 35.
+    ///
+    /// Smoothing rule: require `eos_logit > eosLogitThreshold` for
+    /// `eosConsecutiveFrames` consecutive AR steps. On the canonical,
+    /// 3-frame consecutive shifts the CM fire from step 32 → step 34,
+    /// landing 1 frame ahead of the fp32 reference. Tunable as the
+    /// symptom evolves.
+    static let eosLogitThreshold: Float = -4.0
+    static let eosConsecutiveFrames = 3
+
+    /// Diagnostic: log per-step `eos_logit` trajectory for every AR
+    /// chunk to the console. Format mirrors the conversion project's
+    /// `probe_eos_apples_to_apples.py` table so traces can be pasted
+    /// straight into the agent's analysis pipeline. Off by default
+    /// (verbose — hundreds of lines per synthesize call); flip true
+    /// when investigating EOS/tail issues against captured user audio.
+    static let eosTraceEnabled = false
 }
 
 // MARK: - TTSEngine
@@ -456,6 +481,16 @@ actor TTSEngine: TTSEngineProtocol {
         var chunkOptions = options
         chunkOptions.framesAfterEOS = prepared.framesAfterEosGuess + 2
 
+        if K.eosTraceEnabled {
+            // Header for the trace block — text first 80 chars + the
+            // per-chunk tail-frame budget so we can correlate the
+            // step number where smoothedFire lands against the chunk
+            // length and shape.
+            let textPreview = prepared.text.prefix(80)
+            print("[EOS-TRACE] === chunk text: \"\(textPreview)\" framesAfterEOS=\(chunkOptions.framesAfterEOS) ===")
+            print("[EOS-TRACE] step    logit  counter  fire")
+        }
+
         // 1) Tokenize.
         let tTokenize = CFAbsoluteTimeGetCurrent()
         let (tokens, textLen) = try tokenizer.encode(prepared.text, paddedLength: K.tTextMax)
@@ -490,6 +525,12 @@ actor TTSEngine: TTSEngineProtocol {
         // 6) AR loop: CaLM → next_latent → Mimi → PCM frame → emit.
         var prevLatent = [Float](repeating: .nan, count: 1 * 1 * K.ldim)   // BOS = NaN
         var eosStep: Int? = nil
+        // P-EOS-2: smoothed-fire counter. Increments each AR step the
+        // raw `eos_logit` is above threshold; resets to 0 the moment
+        // it drops below. EOS fires when the counter reaches
+        // `K.eosConsecutiveFrames`. On the canonical reference trace
+        // this lands within 1 frame of the fp32 reference.
+        var consecutiveAboveThreshold = 0
         let loopStart = CFAbsoluteTimeGetCurrent()
         var produced = 0
 
@@ -501,12 +542,30 @@ actor TTSEngine: TTSEngineProtocol {
             let frameOffset = Int32(tPrompt + step)
             let noise = sampleTruncNormal(count: K.ldim, std: sqrt(chunkOptions.temperature), clamp: chunkOptions.noiseClamp)
 
-            let (nextLatent, isEos) = try runCaLMStep(
+            let (nextLatent, eosLogit) = try runCaLMStep(
                 state: calmState,
                 prevLatent: prevLatent,
                 offset: frameOffset,
                 noise: noise
             )
+
+            // Update the consecutive-above-threshold counter; a single
+            // dip resets it. Translates the model's noisy logit into
+            // a stable "EOS detected" decision.
+            if eosLogit > K.eosLogitThreshold {
+                consecutiveAboveThreshold += 1
+            } else {
+                consecutiveAboveThreshold = 0
+            }
+            let smoothedIsEos = consecutiveAboveThreshold >= K.eosConsecutiveFrames
+
+            if K.eosTraceEnabled {
+                let fireMark = (smoothedIsEos && eosStep == nil) ? "FIRE" : (smoothedIsEos ? "yes " : "no  ")
+                print(String(
+                    format: "[EOS-TRACE] %4d  %7.3f  %3d      %@",
+                    step, eosLogit, consecutiveAboveThreshold, fireMark
+                ))
+            }
 
             let pcm = try runMimiStep(
                 state: mimiState,
@@ -526,9 +585,14 @@ actor TTSEngine: TTSEngineProtocol {
             // Record EOS BEFORE the yield so the EOS-detection frame
             // itself is part of the tail-fade region (rather than
             // emitting it at full amplitude and only fading the
-            // strictly post-EOS frames). Behavior is otherwise
-            // identical to setting eosStep after the yield.
-            if isEos && eosStep == nil { eosStep = step }
+            // strictly post-EOS frames). `smoothedIsEos` here is the
+            // moment the consecutive-above-threshold counter reached
+            // `K.eosConsecutiveFrames` — i.e. the frame we commit to
+            // an EOS decision. Earlier above-threshold frames (steps
+            // 32, 33 in the canonical trace) keep playing at full
+            // amplitude; the fade starts at this committed-fire step
+            // so `framesAfterEOS` counts forward from a stable point.
+            if smoothedIsEos && eosStep == nil { eosStep = step }
 
             let isAtFinalChunkFrame = eosStep.map { step >= $0 + chunkOptions.framesAfterEOS } ?? false
             let final = isLastChunk && isAtFinalChunkFrame
@@ -723,7 +787,7 @@ actor TTSEngine: TTSEngineProtocol {
         return Int(tPromptArr.dataPointer.assumingMemoryBound(to: Int32.self).pointee)
     }
 
-    private func runCaLMStep(state: MLState, prevLatent: [Float], offset: Int32, noise: [Float]) throws -> (latent: [Float], isEos: Bool) {
+    private func runCaLMStep(state: MLState, prevLatent: [Float], offset: Int32, noise: [Float]) throws -> (latent: [Float], eosLogit: Float) {
         let prevArr = try MLMultiArray(shape: [1, 1, K.ldim as NSNumber], dataType: .float32)
         prevLatent.withUnsafeBufferPointer { src in
             prevArr.dataPointer.assumingMemoryBound(to: Float.self)
@@ -746,20 +810,25 @@ actor TTSEngine: TTSEngineProtocol {
             from: try MLDictionaryFeatureProvider(dictionary: inputs),
             using: state
         )
+        // P-EOS-2: the rebuilt CaLM exposes `eos_logit` (raw fp32 from
+        // `flow_lm.out_eos(last_x)`, pre-threshold) so the Swift AR
+        // loop can apply its own smoothing/hysteresis instead of
+        // trusting the model's single-frame -4.0 threshold (which
+        // fires ~3 frames early under fp16 K/V state perturbation).
+        // `is_eos` is still emitted by the model but redundant once
+        // we read the raw logit.
         guard let nextLatentArr = out.featureValue(for: "next_latent")?.multiArrayValue,
-              let isEosArr = out.featureValue(for: "is_eos")?.multiArrayValue
+              let eosLogitArr = out.featureValue(for: "eos_logit")?.multiArrayValue
         else {
-            throw TTSEngineError.missingOutput("next_latent / is_eos")
+            throw TTSEngineError.missingOutput("next_latent / eos_logit")
         }
 
         let nextLatent: [Float] = {
             let p = nextLatentArr.dataPointer.assumingMemoryBound(to: Float.self)
             return Array(UnsafeBufferPointer(start: p, count: nextLatentArr.count))
         }()
-        // is_eos is fp32 in the harness's working pipeline (the converter's bool
-        // request ends up exposed as float to MLMultiArray). Match the harness.
-        let isEosVal = isEosArr.dataPointer.assumingMemoryBound(to: Float.self).pointee
-        return (nextLatent, isEosVal > 0.5)
+        let eosLogit = eosLogitArr.dataPointer.assumingMemoryBound(to: Float.self).pointee
+        return (nextLatent, eosLogit)
     }
 
     private func runMimiStep(state: MLState, latent: [Float], offset: Int32) throws -> [Float] {
