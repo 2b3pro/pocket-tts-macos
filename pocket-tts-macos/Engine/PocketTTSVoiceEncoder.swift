@@ -170,37 +170,15 @@ actor PocketTTSVoiceEncoder {
     // MARK: - Audio loading
 
     private nonisolated static func loadAudio(url: URL) throws -> [Float] {
-        let audioFile = try AVAudioFile(forReading: url)
-        let format = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: Double(sampleRate),
-            channels: 1,
-            interleaved: false
-        )!
-        let maxFrames = AVAudioFrameCount(maxSeconds * sampleRate)
-        let readFrames = min(AVAudioFrameCount(audioFile.length), maxFrames)
-
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: readFrames) else {
-            throw EncoderError.encodeFailed("Cannot create audio buffer")
+        do {
+            return try AudioPreconditioner.loadMonoFloat32(
+                url: url,
+                targetRate: sampleRate,
+                maxSeconds: Double(maxSeconds)
+            )
+        } catch {
+            throw EncoderError.encodeFailed(String(describing: error))
         }
-
-        if Int(audioFile.processingFormat.sampleRate) == sampleRate
-            && audioFile.processingFormat.channelCount == 1 {
-            try audioFile.read(into: buffer, frameCount: readFrames)
-        } else {
-            let srcBuffer = AVAudioPCMBuffer(pcmFormat: audioFile.processingFormat, frameCapacity: readFrames)!
-            try audioFile.read(into: srcBuffer, frameCount: readFrames)
-            let converter = AVAudioConverter(from: audioFile.processingFormat, to: format)!
-            _ = converter.convert(to: buffer, error: nil) { _, outStatus in
-                outStatus.pointee = .haveData
-                return srcBuffer
-            }
-        }
-
-        guard let data = buffer.floatChannelData?[0] else {
-            throw EncoderError.encodeFailed("No audio data")
-        }
-        return Array(UnsafeBufferPointer(start: data, count: Int(buffer.frameLength)))
     }
 
     private nonisolated static func rmsNormalize(_ samples: [Float], targetDB: Float) -> [Float] {

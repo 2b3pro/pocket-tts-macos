@@ -214,9 +214,7 @@ final class FishVoiceManager {
 
     /// Returns true if the WAV needs conversion (stereo or wrong sample rate).
     private func needsConversion(_ url: URL) -> Bool {
-        guard let file = try? AVAudioFile(forReading: url) else { return true }
-        let fmt = file.processingFormat
-        return fmt.channelCount != 1 || Int(fmt.sampleRate) != 44100
+        AudioPreconditioner.needsConversion(url: url, targetRate: 44_100)
     }
 
     /// Normalizes WAV in-place to -16 dB RMS for consistent encoder input.
@@ -243,26 +241,10 @@ final class FishVoiceManager {
     }
 
     private func convertToWAV(source: URL, destination: URL) throws {
-        guard let inputFile = try? AVAudioFile(forReading: source) else {
-            throw NSError(domain: "FishVoiceManager", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Cannot read audio file: \(source.lastPathComponent)"
-            ])
-        }
-        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 1, interleaved: false)!
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(inputFile.length)) else {
-            throw NSError(domain: "FishVoiceManager", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "Cannot create audio buffer"
-            ])
-        }
-        let converter = AVAudioConverter(from: inputFile.processingFormat, to: format)!
-        try converter.convert(to: buffer, error: nil) { _, outStatus in
-            outStatus.pointee = .haveData
-            do {
-                try inputFile.read(into: buffer)
-            } catch {}
-            return buffer
-        }
-        let outputFile = try AVAudioFile(forWriting: destination, settings: format.settings)
-        try outputFile.write(from: buffer)
+        try AudioPreconditioner.convertToMonoWAV(
+            source: source,
+            destination: destination,
+            targetRate: 44_100
+        )
     }
 }

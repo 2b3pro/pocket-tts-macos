@@ -87,30 +87,15 @@ final class VoiceEnhancer {
     // MARK: - Audio I/O
 
     private static func loadAudio(url: URL, targetRate: Int) throws -> [Float] {
-        let audioFile = try AVAudioFile(forReading: url)
-        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(targetRate), channels: 1, interleaved: false)!
-        let frameCount = AVAudioFrameCount(audioFile.length)
-        let maxFrames = AVAudioFrameCount(30 * targetRate)
-        let readFrames = min(frameCount, maxFrames)
-
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: readFrames) else {
+        do {
+            return try AudioPreconditioner.loadMonoFloat32(
+                url: url,
+                targetRate: targetRate,
+                maxSeconds: 30
+            )
+        } catch {
             throw EnhancerError.audioReadFailed
         }
-
-        if Int(audioFile.processingFormat.sampleRate) == targetRate && audioFile.processingFormat.channelCount == 1 {
-            try audioFile.read(into: buffer, frameCount: readFrames)
-        } else {
-            let srcBuffer = AVAudioPCMBuffer(pcmFormat: audioFile.processingFormat, frameCapacity: readFrames)!
-            try audioFile.read(into: srcBuffer, frameCount: readFrames)
-            let converter = AVAudioConverter(from: audioFile.processingFormat, to: format)!
-            _ = converter.convert(to: buffer, error: nil) { _, outStatus in
-                outStatus.pointee = .haveData
-                return srcBuffer
-            }
-        }
-
-        guard let data = buffer.floatChannelData?[0] else { throw EnhancerError.audioReadFailed }
-        return Array(UnsafeBufferPointer(start: data, count: Int(buffer.frameLength)))
     }
 
     private static func writeWAV(samples: [Float], sampleRate: Int, url: URL) throws {
