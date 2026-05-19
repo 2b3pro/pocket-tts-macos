@@ -79,6 +79,7 @@ final class FishVoiceManager {
         )
 
         voices.append(voice)
+        sortVoices()
         saveCatalog()
         return voice
     }
@@ -192,10 +193,20 @@ final class FishVoiceManager {
             decoder.dateDecodingStrategy = .iso8601
             voices = try decoder.decode([FishVoice].self, from: data)
             voices.removeAll { !FileManager.default.fileExists(atPath: $0.wavPath) }
+            sortVoices()
         } catch {
             print("[FishVoiceManager] failed to load catalog: \(error)")
         }
         print("[FishVoiceManager] loaded \(voices.count) voices")
+    }
+
+    // MARK: - Sort invariant
+    // The `voices` array is kept sorted by name (Finder-style natural sort)
+    // so that every consumer (Single Voice picker, Multi-Talk SpeakerCard,
+    // Chat Settings, Voice Manager) renders in the same predictable order
+    // without having to remember to sort at each call site.
+    private func sortVoices() {
+        voices.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     private func saveCatalog() {

@@ -75,16 +75,19 @@ struct SpeakerCard: View {
                 Group {
                     if activeBackend == .pocketTTS {
                         let importedVoices = FishVoiceManager.shared.voices.filter { $0.pocketTTSKVPath != nil }
+                        let builtInVoices = voices
+                            .filter { $0.type == .predefined }
+                            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
                         Picker("", selection: $speaker.voiceID) {
                             Section("Built-in") {
-                                ForEach(voices.filter { $0.type == .predefined }, id: \.id) { v in
+                                ForEach(builtInVoices, id: \.id) { v in
                                     Text(v.name).tag(v.id)
                                 }
                             }
                             if !importedVoices.isEmpty {
                                 Section("My Voices") {
                                     ForEach(importedVoices) { v in
-                                        Text(v.name).tag("imported:\(v.id)")
+                                        Text(v.isEnhanced ? "✨ \(v.name)" : v.name).tag("imported:\(v.id)")
                                     }
                                 }
                             }
@@ -96,7 +99,7 @@ struct SpeakerCard: View {
                             if !fishVoices.isEmpty {
                                 Section("My Voices") {
                                     ForEach(fishVoices) { v in
-                                        Text(v.name).tag(v.id)
+                                        Text(v.isEnhanced ? "✨ \(v.name)" : v.name).tag(v.id)
                                     }
                                 }
                             }

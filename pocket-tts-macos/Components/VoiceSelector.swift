@@ -35,7 +35,6 @@ struct VoiceSelector: View {
     private var pocketTTSPicker: some View {
         let importedVoices = FishVoiceManager.shared.voices
             .filter { $0.pocketTTSKVPath != nil }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         let builtInVoices = voices
             .filter { $0.type == .predefined }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -68,7 +67,6 @@ struct VoiceSelector: View {
 
     private var fishPicker: some View {
         let fishVoices = FishVoiceManager.shared.voices
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
 
         return VStack(alignment: .leading, spacing: Theme.space2) {
             Picker("", selection: $selectedVoiceID) {

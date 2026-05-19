@@ -122,6 +122,9 @@ struct SettingsView: View {
 
     private var voiceSection: some View {
         let importedVoices = FishVoiceManager.shared.voices.filter { $0.pocketTTSKVPath != nil }
+        let builtInVoices = voices
+            .filter { $0.type == .predefined }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
 
         return VStack(alignment: .leading, spacing: Theme.space3) {
             Text("TTS Voice for chat replies")
@@ -130,14 +133,14 @@ struct SettingsView: View {
 
             Picker("", selection: $workingCopy.ttsVoiceID) {
                 Section("Built-in") {
-                    ForEach(voices.filter { $0.type == .predefined }, id: \.id) { v in
+                    ForEach(builtInVoices, id: \.id) { v in
                         Text(v.name).tag(v.id)
                     }
                 }
                 if !importedVoices.isEmpty {
                     Section("My Voices") {
                         ForEach(importedVoices) { v in
-                            Text(v.name).tag("imported:\(v.id)")
+                            Text(v.isEnhanced ? "✨ \(v.name)" : v.name).tag("imported:\(v.id)")
                         }
                     }
                 }
