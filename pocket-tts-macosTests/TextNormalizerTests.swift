@@ -227,4 +227,111 @@ final class TextNormalizerTests: XCTestCase {
         let ascii = "Well, let me tell you something, pal: it's not working!"
         XCTAssertEqual(TextNormalizer.normalize(curly), ascii)
     }
+
+    // MARK: - Smart-punctuation Tier 1: invisibles & dash variants
+
+    func test_softHyphenIsStripped() {
+        // Soft hyphen is a "may break here" hint, invisible in most contexts
+        // but byte-fallbacks. Always strip.
+        XCTAssertEqual(TextNormalizer.normalize("super\u{00AD}market"), "supermarket")
+    }
+
+    func test_zeroWidthSpaceIsStripped() {
+        XCTAssertEqual(TextNormalizer.normalize("foo\u{200B}bar"), "foobar")
+    }
+
+    func test_zeroWidthJoinerIsStripped() {
+        XCTAssertEqual(TextNormalizer.normalize("foo\u{200D}bar"), "foobar")
+    }
+
+    func test_bomIsStripped() {
+        XCTAssertEqual(TextNormalizer.normalize("\u{FEFF}Hello"), "Hello")
+    }
+
+    func test_lineSeparatorBecomesSpace() {
+        // Strip would jam words together. A space preserves the boundary
+        // and the trailing whitespace collapse handles any doubling.
+        XCTAssertEqual(TextNormalizer.normalize("foo\u{2028}bar"), "foo bar")
+    }
+
+    func test_dashVariantsBecomeAsciiHyphen() {
+        // Each of these byte-fallbacks; ASCII `-` tokenizes cleanly.
+        XCTAssertEqual(TextNormalizer.normalize("foo\u{2011}bar"), "foo-bar") // non-breaking
+        XCTAssertEqual(TextNormalizer.normalize("foo\u{2012}bar"), "foo-bar") // figure dash
+        XCTAssertEqual(TextNormalizer.normalize("foo\u{2015}bar"), "foo-bar") // horizontal bar
+        XCTAssertEqual(TextNormalizer.normalize("foo\u{2212}bar"), "foo-bar") // math minus
+    }
+
+    func test_enAndEmDashesAreLeftAlone() {
+        // Both have their own BPE pieces in vocab; substituting would
+        // discard semantic punctuation the model can handle natively.
+        XCTAssertEqual(TextNormalizer.normalize("hello\u{2013}world this is a test"), "hello\u{2013}world this is a test")
+        XCTAssertEqual(TextNormalizer.normalize("hello\u{2014}world this is a test"), "hello\u{2014}world this is a test")
+    }
+
+    // MARK: - Smart-punctuation Tier 2: bullets & arrows
+
+    func test_bulletsAreStripped() {
+        // Whitespace-collapse run leaves a clean string.
+        let input = "Hello \u{2022} world, \u{25E6} foo, \u{25AA} bar."
+        XCTAssertEqual(TextNormalizer.normalize(input), "Hello world, foo, bar.")
+    }
+
+    func test_arrowsAreStripped() {
+        let input = "Step 1 \u{2192} step 2 \u{2192} step 3 done"
+        // Numbers expand via the number expander.
+        XCTAssertEqual(TextNormalizer.normalize(input), "Step one step two step three done")
+    }
+
+    func test_checkmarksAreStripped() {
+        XCTAssertEqual(TextNormalizer.normalize("\u{2713} done and finished"), "done and finished")
+    }
+
+    // MARK: - Smart-punctuation Tier 3: symbols, fractions, exponents
+
+    func test_copyrightRegisteredTrademark() {
+        XCTAssertEqual(TextNormalizer.normalize("\u{00A9} 2026 Acme"), "copyright two thousand and twenty-six Acme")
+        XCTAssertEqual(TextNormalizer.normalize("Foo\u{00AE} bar"), "Foo registered bar")
+        XCTAssertEqual(TextNormalizer.normalize("Quux\u{2122} brand"), "Quux trademark brand")
+    }
+
+    func test_sectionAndPilcrow() {
+        XCTAssertEqual(TextNormalizer.normalize("see \u{00A7} four"), "see section four")
+        XCTAssertEqual(TextNormalizer.normalize("end of \u{00B6} here"), "end of paragraph here")
+    }
+
+    func test_plusMinusMultiplyDivide() {
+        // `±` `×` `÷` between numbers — spoken as "plus or minus"/"times"/
+        // "divided by".
+        XCTAssertEqual(TextNormalizer.normalize("error 5\u{00B1}1"), "error five plus or minus one")
+        XCTAssertEqual(TextNormalizer.normalize("size 3\u{00D7}4"), "size three times four")
+        XCTAssertEqual(TextNormalizer.normalize("ratio 12\u{00F7}4"), "ratio twelve divided by four")
+    }
+
+    func test_approxAndComparisons() {
+        XCTAssertEqual(TextNormalizer.normalize("pi \u{2248} 3.14"), "pi approximately equal three point one four")
+        XCTAssertEqual(TextNormalizer.normalize("x \u{2260} y"), "x not equal y")
+        XCTAssertEqual(TextNormalizer.normalize("x \u{2264} 10"), "x less than or equal ten")
+        XCTAssertEqual(TextNormalizer.normalize("x \u{2265} 10"), "x greater than or equal ten")
+    }
+
+    func test_vulgarFractions() {
+        XCTAssertEqual(TextNormalizer.normalize("eat \u{00BD} of it"), "eat one half of it")
+        XCTAssertEqual(TextNormalizer.normalize("\u{00BC} cup sugar"), "one quarter cup sugar")
+        XCTAssertEqual(TextNormalizer.normalize("\u{00BE} done"), "three quarters done")
+        XCTAssertEqual(TextNormalizer.normalize("\u{2153} mile"), "one third mile")
+    }
+
+    func test_superscriptExponents() {
+        // x² → "x squared", x³ → "x cubed".
+        XCTAssertEqual(TextNormalizer.normalize("area is x\u{00B2}"), "area is x squared")
+        XCTAssertEqual(TextNormalizer.normalize("volume is r\u{00B3}"), "volume is r cubed")
+    }
+
+    func test_combinedSmartPunctSentence() {
+        // One sentence that touches every tier.
+        let input = "She said \u{201C}hello\u{201D}\u{2026} I think it\u{2019}s about a 3\u{00D7}4 grid, \u{00BD} done\u{2026}"
+        let expected = "She said \"hello\"... I think it's about a three times four grid, one half done..."
+        XCTAssertEqual(TextNormalizer.normalize(input), expected)
+    }
 }

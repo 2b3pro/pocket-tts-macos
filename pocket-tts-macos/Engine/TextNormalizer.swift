@@ -284,56 +284,155 @@ nonisolated enum TextNormalizer {
 
     // MARK: - Smart-punctuation normalization
 
-    /// Substitution table for Unicode "smart" punctuation → ASCII equivalents.
-    /// Each Unicode char on the left byte-falls back into multiple
-    /// `<0xXX>` tokens in the Kyutai SentencePiece vocab, which the model
-    /// wasn't trained on and reliably mispronounces (curly apostrophes
-    /// in contractions are the canonical user-reported case). The ASCII
-    /// equivalents on the right tokenize to single canonical pieces.
+    /// Substitution table for Unicode characters that byte-fallback in the
+    /// Kyutai SentencePiece vocab (3-4 `<0xXX>` tokens per character) into
+    /// the closest ASCII equivalent or spoken word that does NOT
+    /// byte-fallback. The model wasn't trained on byte-fallback sequences
+    /// and reliably distorts on them; curly apostrophes in contractions
+    /// were the canonical user-reported case.
     ///
-    /// Notes:
-    ///  * Dashes (–, —) intentionally NOT included — both have their own
-    ///    BPE pieces in vocab (3977, 3133). Add them here only if listening
-    ///    confirms the model also struggles with those tokens.
-    ///  * `…` U+2026 expands to three dots so it tokenizes as the `...`
-    ///    piece (id 799), which is in the model's EOS-sentence set.
-    private static let smartPunctSubstitutions: [(Character, String)] = [
-        ("\u{2018}", "'"),  // ‘ left single quotation mark
-        ("\u{2019}", "'"),  // ’ right single quotation mark / curly apostrophe
-        ("\u{201A}", "'"),  // ‚ single low-9 quotation mark
-        ("\u{201B}", "'"),  // ‛ single high-reversed-9 quotation mark
-        ("\u{2032}", "'"),  // ′ prime (often used as apostrophe)
-        ("\u{201C}", "\""), // “ left double quotation mark
-        ("\u{201D}", "\""), // ” right double quotation mark
-        ("\u{201E}", "\""), // „ double low-9 quotation mark
-        ("\u{201F}", "\""), // ‟ double high-reversed-9 quotation mark
-        ("\u{2033}", "\""), // ″ double prime
-        ("\u{2026}", "..."),// … horizontal ellipsis
-        ("\u{00A0}", " "),  // non-breaking space
-        ("\u{2009}", " "),  // thin space
-        ("\u{202F}", " "),  // narrow no-break space
+    /// Categories:
+    ///  * **Quotes / apostrophes / ellipsis** → ASCII (`'`, `"`, `...`).
+    ///  * **Whitespace variants** → regular space.
+    ///  * **Invisible / control characters** → stripped or space (these
+    ///    leak in from copy-paste of word-processed text, PDF copy, etc.
+    ///    and are silent killers because the user can't see them).
+    ///  * **Dash variants that byte-fallback** → ASCII `-`. (En `–`/em `—`
+    ///    dashes are intentionally NOT here — both have their own BPE
+    ///    pieces in vocab and tokenize cleanly.)
+    ///  * **Bullets / arrows** → stripped. The model can't pronounce them
+    ///    meaningfully; LLM-generated lists commonly include them.
+    ///  * **Typographic symbols** with obvious words (`©`, `®`, `™`, `§`,
+    ///    `±`, `×`, `÷`, `≈`, etc.) → that word with surrounding spaces.
+    ///  * **Vulgar fractions** (`½`, `¼`, `¾`, `⅓`, …) → spoken form,
+    ///    matching `NumberToWords.ordinal`-based fraction expansion.
+    ///  * **Common superscripts** `²` `³` → " squared" / " cubed".
+    ///
+    /// Standalone `°` is intentionally skipped — `°C` / `°F` is handled
+    /// upstream by the unit table; replacing `°` here would break that
+    /// match. Rare-enough edge case to defer.
+    private static let smartPunctSubstitutions: [(Unicode.Scalar, String)] = [
+        // Curly quotes & apostrophes
+        ("\u{2018}", "'"),    // ‘ left single
+        ("\u{2019}", "'"),    // ’ right single / curly apostrophe
+        ("\u{201A}", "'"),    // ‚ single low-9
+        ("\u{201B}", "'"),    // ‛ single high-reversed-9
+        ("\u{2032}", "'"),    // ′ prime
+        ("\u{201C}", "\""),   // “ left double
+        ("\u{201D}", "\""),   // ” right double
+        ("\u{201E}", "\""),   // „ double low-9
+        ("\u{201F}", "\""),   // ‟ double high-reversed-9
+        ("\u{2033}", "\""),   // ″ double prime
+
+        // Ellipsis (single char → three ASCII dots, which is the canonical
+        // EOS-class `...` piece in vocab — token 799).
+        ("\u{2026}", "..."),  // …
+
+        // Whitespace variants
+        ("\u{00A0}", " "),    // NBSP
+        ("\u{2009}", " "),    // thin space
+        ("\u{202F}", " "),    // narrow no-break space
+        ("\u{2028}", " "),    // line separator
+        ("\u{2029}", " "),    // paragraph separator
+
+        // Invisible / control — strip
+        ("\u{00AD}", ""),     // soft hyphen
+        ("\u{200B}", ""),     // zero-width space
+        ("\u{200C}", ""),     // zero-width non-joiner
+        ("\u{200D}", ""),     // zero-width joiner
+        ("\u{FEFF}", ""),     // BOM / zero-width no-break
+
+        // Dash variants that byte-fallback (en `–`/em `—` left alone)
+        ("\u{2011}", "-"),    // ‑ non-breaking hyphen
+        ("\u{2012}", "-"),    // ‒ figure dash
+        ("\u{2015}", "-"),    // ― horizontal bar
+        ("\u{2212}", "-"),    // − math minus
+
+        // Bullets — strip (LLMs use these as list markers)
+        ("\u{2022}", ""),     // • bullet
+        ("\u{2023}", ""),     // ‣ triangular bullet
+        ("\u{2043}", ""),     // ⁃ hyphen bullet
+        ("\u{25E6}", ""),     // ◦ white bullet
+        ("\u{25AA}", ""),     // ▪ black small square
+        ("\u{25AB}", ""),     // ▫ white small square
+
+        // Arrows — strip (LLMs use them to mean "becomes" / "to";
+        // spoken-out versions would be weirder than dropping them)
+        ("\u{2190}", ""),     // ← left arrow
+        ("\u{2191}", ""),     // ↑ up arrow
+        ("\u{2192}", ""),     // → right arrow
+        ("\u{2193}", ""),     // ↓ down arrow
+        ("\u{21D0}", ""),     // ⇐ left double arrow
+        ("\u{21D2}", ""),     // ⇒ right double arrow
+
+        // Visual marker symbols — strip (no good spoken form)
+        ("\u{2713}", ""),     // ✓ check mark
+        ("\u{2717}", ""),     // ✗ ballot X
+        ("\u{2605}", ""),     // ★ black star
+        ("\u{2606}", ""),     // ☆ white star
+
+        // Typographic symbols → spoken form. Surrounding spaces keep
+        // them from running into adjacent words; the normalizer's
+        // trailing `"  +"` → " " regex collapses any doubled spaces.
+        ("\u{00A9}", " copyright "),     // ©
+        ("\u{00AE}", " registered "),    // ®
+        ("\u{2122}", " trademark "),     // ™
+        ("\u{00A7}", " section "),       // §
+        ("\u{00B6}", " paragraph "),     // ¶ pilcrow
+        ("\u{00B1}", " plus or minus "), // ±
+        ("\u{00D7}", " times "),         // × multiplication sign
+        ("\u{00F7}", " divided by "),    // ÷ division sign
+        ("\u{2248}", " approximately equal "), // ≈
+        ("\u{2260}", " not equal "),     // ≠
+        ("\u{2264}", " less than or equal "),     // ≤
+        ("\u{2265}", " greater than or equal "),  // ≥
+
+        // Vulgar fractions → spoken form (matches `fractionNames` keys).
+        ("\u{00BC}", "one quarter"),     // ¼
+        ("\u{00BD}", "one half"),        // ½
+        ("\u{00BE}", "three quarters"),  // ¾
+        ("\u{2153}", "one third"),       // ⅓
+        ("\u{2154}", "two thirds"),      // ⅔
+        ("\u{2155}", "one fifth"),       // ⅕
+        ("\u{2156}", "two fifths"),      // ⅖
+        ("\u{2157}", "three fifths"),    // ⅗
+        ("\u{2158}", "four fifths"),     // ⅘
+        ("\u{2159}", "one sixth"),       // ⅙
+        ("\u{215A}", "five sixths"),     // ⅚
+        ("\u{215B}", "one eighth"),      // ⅛
+        ("\u{215C}", "three eighths"),   // ⅜
+        ("\u{215D}", "five eighths"),    // ⅝
+        ("\u{215E}", "seven eighths"),   // ⅞
+
+        // Superscripts as exponents
+        ("\u{00B2}", " squared"),        // ²
+        ("\u{00B3}", " cubed"),          // ³
     ]
 
     private static func normalizeSmartPunctuation(_ text: String) -> String {
-        // Fast path: scan once for any smart character; only allocate a
-        // new String if at least one needs replacing.
-        var needsReplace = false
+        // Operate on Unicode scalars, not Characters. Swift's `Character`
+        // is an extended grapheme cluster, and combining-class scalars
+        // (notably the zero-width joiner U+200D and combining accents)
+        // glue themselves to the preceding scalar. A Character-keyed
+        // lookup table would never see those as standalone Characters,
+        // so the silent stripping would silently fail. Scalar-level
+        // iteration handles every case uniformly.
         let triggers = Set(smartPunctSubstitutions.map(\.0))
-        for ch in text where triggers.contains(ch) {
+        var needsReplace = false
+        for scalar in text.unicodeScalars where triggers.contains(scalar) {
             needsReplace = true
             break
         }
         if !needsReplace { return text }
 
+        let table = Dictionary(uniqueKeysWithValues: smartPunctSubstitutions)
         var out = ""
         out.reserveCapacity(text.count)
-        // Build a dict for O(1) lookup inside the loop.
-        let table = Dictionary(uniqueKeysWithValues: smartPunctSubstitutions)
-        for ch in text {
-            if let replacement = table[ch] {
+        for scalar in text.unicodeScalars {
+            if let replacement = table[scalar] {
                 out.append(replacement)
             } else {
-                out.append(ch)
+                out.unicodeScalars.append(scalar)
             }
         }
         return out
