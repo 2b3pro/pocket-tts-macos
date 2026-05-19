@@ -33,18 +33,23 @@ struct VoiceSelector: View {
     // MARK: - Pocket-TTS picker
 
     private var pocketTTSPicker: some View {
-        let importedVoices = FishVoiceManager.shared.voices.filter { $0.pocketTTSKVPath != nil }
+        let importedVoices = FishVoiceManager.shared.voices
+            .filter { $0.pocketTTSKVPath != nil }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        let builtInVoices = voices
+            .filter { $0.type == .predefined }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
 
         return Picker("", selection: $selectedVoiceID) {
             Section("Built-in") {
-                ForEach(voices.filter { $0.type == .predefined }, id: \.id) { v in
+                ForEach(builtInVoices, id: \.id) { v in
                     Text(v.name).tag(v.id)
                 }
             }
             if !importedVoices.isEmpty {
                 Section("My Voices") {
                     ForEach(importedVoices) { v in
-                        Text(v.name).tag("imported:\(v.id)")
+                        Text(v.isEnhanced ? "✨ \(v.name)" : v.name).tag("imported:\(v.id)")
                     }
                 }
             }
@@ -63,6 +68,7 @@ struct VoiceSelector: View {
 
     private var fishPicker: some View {
         let fishVoices = FishVoiceManager.shared.voices
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
 
         return VStack(alignment: .leading, spacing: Theme.space2) {
             Picker("", selection: $selectedVoiceID) {
@@ -70,7 +76,7 @@ struct VoiceSelector: View {
                 if !fishVoices.isEmpty {
                     Section("My Voices") {
                         ForEach(fishVoices) { v in
-                            Text(v.name).tag(v.id)
+                            Text(v.isEnhanced ? "✨ \(v.name)" : v.name).tag(v.id)
                         }
                     }
                 }
