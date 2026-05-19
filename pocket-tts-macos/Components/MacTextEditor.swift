@@ -57,6 +57,27 @@ struct MacTextEditor: NSViewRepresentable {
         tv.drawsBackground = false
         scroll.drawsBackground = false
         tv.textContainerInset = NSSize(width: 4, height: 6)
+
+        // Spell check: continuous (the red squiggle under misspellings).
+        // Auto-correct intentionally OFF — replacing words without the
+        // user's consent is too aggressive for a TTS prompt where the
+        // exact wording matters.
+        tv.isContinuousSpellCheckingEnabled = true
+        tv.isGrammarCheckingEnabled = false
+        tv.isAutomaticSpellingCorrectionEnabled = false
+
+        // Smart-substitution: ALL OFF. macOS would otherwise convert
+        // ASCII `'` / `"` / `--` to curly / em-dash variants as the
+        // user types, which would silently re-introduce the
+        // byte-fallback tokenization bug that `TextNormalizer`'s
+        // smart-punct normalization just fixed (curly chars
+        // byte-fallback to 3–4 tokens the model wasn't trained on).
+        tv.isAutomaticQuoteSubstitutionEnabled = false
+        tv.isAutomaticDashSubstitutionEnabled = false
+        tv.isAutomaticTextReplacementEnabled = false
+        tv.isAutomaticDataDetectionEnabled = false
+        tv.isAutomaticLinkDetectionEnabled = false
+
         context.coordinator.textView = tv
         bridge?.coordinator = context.coordinator
         // Initial text content
