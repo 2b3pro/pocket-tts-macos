@@ -72,7 +72,7 @@ struct ContentView: View {
                 }
             }
         }
-        // App-wide settings (LM Studio + Pocket-TTS Tuning). Reachable from
+        // App-wide settings (Local LLM endpoint + Pocket-TTS Tuning). Reachable from
         // the global header gear icon and from Cmd+,.
         .sheet(isPresented: $appState.showsAppSettings) {
             AppSettingsView(
@@ -239,7 +239,7 @@ struct ContentView: View {
                 .help("Voice Manager")
                 .accessibilityIdentifier("header.voiceManagerButton")
 
-                // Global app-settings button. Reaches LM Studio + Pocket-TTS
+                // Global app-settings button. Reaches LLM endpoint + Pocket-TTS
                 // tuning from any tab. The Chat tab has its own (chat-only)
                 // gear button inside its header.
                 Button(action: { appState.showsAppSettings = true }) {

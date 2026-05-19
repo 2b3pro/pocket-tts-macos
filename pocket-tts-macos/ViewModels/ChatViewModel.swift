@@ -3,7 +3,7 @@
 //  pocket-tts-macos
 //
 //  Orchestrates: LLM streaming → SentenceDetector → TTS queue → StreamingPlayer.
-//  The pipeline is two cooperating Tasks: one consuming LM Studio's SSE
+//  The pipeline is two cooperating Tasks: one consuming the LLM's SSE
 //  stream and enqueueing sentences, one consuming the queue and feeding the
 //  TTS engine + player. Cancellation halts both.
 
@@ -49,9 +49,9 @@ final class ChatViewModel {
     private let engine: TTSEngine
     private let player: StreamingPlayer
     private let appState: AppState
-    private var client: LMStudioClient
+    private var client: LocalLLMClient
     var settings: ChatSettings {
-        didSet { client = LMStudioClient(baseURL: URL(string: settings.baseURL) ?? Self.fallbackURL) }
+        didSet { client = LocalLLMClient(baseURL: URL(string: settings.baseURL) ?? Self.fallbackURL) }
     }
 
     private var llmTask: Task<Void, Never>?
@@ -79,7 +79,7 @@ final class ChatViewModel {
         self.player = player
         self.appState = appState
         self.settings = settings
-        self.client = LMStudioClient(baseURL: URL(string: settings.baseURL) ?? Self.fallbackURL)
+        self.client = LocalLLMClient(baseURL: URL(string: settings.baseURL) ?? Self.fallbackURL)
     }
 
     /// Build the per-call options, pulling user-tunable values (chunk

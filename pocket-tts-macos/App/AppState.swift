@@ -56,7 +56,7 @@ final class AppState {
     var selectedTab: AppTab = .single
     var pendingReuse: PendingReuse?
 
-    /// App-wide settings sheet visibility (LM Studio config, Pocket-TTS
+    /// App-wide settings sheet visibility (LLM endpoint config, Pocket-TTS
     /// tuning). Toggled by Cmd+, or the gear icon in the global header
     /// so it's reachable from any tab.
     var showsAppSettings: Bool = false
@@ -72,7 +72,10 @@ final class AppState {
     /// Toast notification shown when a voice finishes encoding.
     var toastMessage: String?
 
-    /// LM Studio chat settings. Persisted via UserDefaults; loaded once at init.
+    /// Chat + LLM-endpoint settings struct. Persisted via UserDefaults;
+    /// loaded once at init. (Despite the name, this still holds the
+    /// global LLM endpoint config until that field migrates to
+    /// SwiftData — see follow-up commit.)
     var chatSettings: ChatSettings
 
     /// Per-chunk SentencePiece-token budget for Pocket-TTS synthesis.

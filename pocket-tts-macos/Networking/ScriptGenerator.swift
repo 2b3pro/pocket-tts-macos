@@ -42,7 +42,7 @@ final class ScriptGenerator {
 
     func checkConnection(settings: ChatSettings) async {
         connectionState = .checking
-        let client = LMStudioClient(baseURL: URL(string: settings.baseURL) ?? fallbackURL)
+        let client = LocalLLMClient(baseURL: URL(string: settings.baseURL) ?? fallbackURL)
         do {
             let models = try await client.listModels()
             if let model = models.first {
@@ -72,7 +72,7 @@ final class ScriptGenerator {
                          .replacingOccurrences(of: "speaker count", with: "\(speakerCount)")
             : basePrompt
 
-        let client = LMStudioClient(baseURL: URL(string: settings.baseURL) ?? fallbackURL)
+        let client = LocalLLMClient(baseURL: URL(string: settings.baseURL) ?? fallbackURL)
         let userMessage = ChatMessage(role: .user, content: prompt)
         let preferredModel = settings.model.isEmpty ? model : settings.model
 

@@ -2,7 +2,7 @@
 //  ChatModels.swift
 //  pocket-tts-macos
 //
-//  Phase 4 — chat data structures + LM Studio settings persistence.
+//  Phase 4 — chat data structures + LLM endpoint settings persistence.
 
 import Foundation
 

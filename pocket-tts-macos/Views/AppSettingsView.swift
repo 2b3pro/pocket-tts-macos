@@ -6,7 +6,7 @@
 //  global header (next to the Voice Manager) or via Cmd+,. Contains
 //  configuration that applies across tabs:
 //
-//    * LM Studio base URL + model. Drives the AI Writer in Single Voice
+//    * Local LLM endpoint base URL + model. Drives the AI Writer in Single Voice
 //      and Multi-Talk *and* the Chat tab — was previously locked inside
 //      the Chat settings sheet, which made no sense as those features
 //      moved out of Chat-only territory.
@@ -70,8 +70,8 @@ struct AppSettingsView: View {
 
     private var lmStudioSection: some View {
         VStack(alignment: .leading, spacing: Theme.space3) {
-            Text("LM Studio").font(Theme.fontSMBold).foregroundStyle(Theme.textPrimary)
-            Text("Used by the AI Writer in Single Voice and Multi-Talk, and by Chat for streaming replies.")
+            Text("Local LLM Endpoint").font(Theme.fontSMBold).foregroundStyle(Theme.textPrimary)
+            Text("OpenAI-compatible HTTP API — works with LM Studio, Ollama, llama.cpp server, vLLM, LocalAI, etc. Used by the AI Writer in Single Voice and Multi-Talk, and by Chat for streaming replies.")
                 .font(Theme.fontXS)
                 .foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -224,7 +224,7 @@ struct AppSettingsView: View {
             modelLoadError = "Invalid URL"
             return
         }
-        let client = LMStudioClient(baseURL: url)
+        let client = LocalLLMClient(baseURL: url)
         do {
             let list = try await client.listModels()
             availableModels = list
@@ -242,7 +242,7 @@ struct AppSettingsView: View {
             probeState = .fail("invalid URL")
             return
         }
-        let client = LMStudioClient(baseURL: url)
+        let client = LocalLLMClient(baseURL: url)
         do {
             let list = try await client.listModels()
             if let first = list.first {

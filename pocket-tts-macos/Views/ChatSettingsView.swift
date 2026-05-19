@@ -4,7 +4,7 @@
 //
 //  Chat-scoped settings: the TTS voice used for spoken chat replies, and
 //  the chat system prompt sent on every conversation. App-wide settings
-//  (LM Studio config, Pocket-TTS tuning) live in AppSettingsView and are
+//  (LLM endpoint config, Pocket-TTS tuning) live in AppSettingsView and are
 //  reachable from a gear icon in the global header — not from this sheet,
 //  which is only triggered by the Chat tab's own gear button because
 //  these fields don't apply outside the Chat context.

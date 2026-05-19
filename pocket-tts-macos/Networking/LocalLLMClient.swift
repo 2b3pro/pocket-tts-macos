@@ -1,20 +1,26 @@
 //
-//  LMStudioClient.swift
+//  LocalLLMClient.swift
 //  pocket-tts-macos
 //
-//  Talks to LM Studio's OpenAI-compatible HTTP API. Two endpoints:
+//  Talks to any OpenAI-compatible HTTP API. Originally LM Studio-only;
+//  the wire format is identical for Ollama (via its `/v1` facade),
+//  llama.cpp's `server`, vLLM, LocalAI, TabbyAPI, and OpenAI proper —
+//  so we renamed for honesty and to make it obvious from the UI that
+//  any of those providers work.
+//
+//  Two endpoints:
 //    GET  /v1/models                — list available models (used for the picker
 //                                     + connection health check)
-//    POST /v1/chat/completions       — chat with `stream: true`; the response is
+//    POST /v1/chat/completions      — chat with `stream: true`; the response is
 //                                     SSE: each `data: {…}` line is a JSON
 //                                     delta whose `choices[0].delta.content`
 //                                     is the next token chunk.
 
 import Foundation
 
-// MARK: - LMStudioClient
+// MARK: - LocalLLMClient
 
-actor LMStudioClient {
+actor LocalLLMClient {
     enum ClientError: Error, CustomStringConvertible {
         case invalidURL(String)
         case httpError(status: Int, body: String?)
@@ -23,8 +29,8 @@ actor LMStudioClient {
 
         var description: String {
             switch self {
-            case let .invalidURL(s): return "invalid LM Studio URL: \(s)"
-            case let .httpError(s, body): return "LM Studio HTTP \(s)\(body.map { ": \($0)" } ?? "")"
+            case let .invalidURL(s): return "invalid LLM endpoint URL: \(s)"
+            case let .httpError(s, body): return "LLM endpoint HTTP \(s)\(body.map { ": \($0)" } ?? "")"
             case let .decodeFailed(s): return "failed to decode response: \(s)"
             case .cancelled: return "request cancelled"
             }
@@ -41,8 +47,8 @@ actor LMStudioClient {
 
     // MARK: - Models
 
-    /// GET /v1/models — returns the list of model IDs known to LM Studio.
-    /// Doubles as a connection probe: if this succeeds, LM Studio is reachable.
+    /// GET /v1/models — returns the list of model IDs known to the endpoint.
+    /// Doubles as a connection probe: if this succeeds, the endpoint is reachable.
     func listModels() async throws -> [String] {
         let url = baseURL.appendingPathComponent("v1/models")
         var req = URLRequest(url: url)
@@ -143,7 +149,7 @@ actor LMStudioClient {
                     continuation.yield(content)
                 }
             } catch {
-                // LM Studio occasionally sends partial JSON or non-content
+                // Some servers (e.g. LM Studio) occasionally send partial JSON or non-content
                 // events (e.g. role-only deltas). Silently ignore — those
                 // aren't tokens we care about.
                 continue
