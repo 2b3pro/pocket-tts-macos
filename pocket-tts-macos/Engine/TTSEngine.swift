@@ -16,13 +16,15 @@ nonisolated struct PCMFrame: Sendable {
 }
 
 // MARK: - SynthesisOptions
-/// Phase 0c default values match the pocket-tts Python reference for the
-/// validated test phrase. The conversion project's `e2e_python.py` runs at these.
+/// Defaults match the Python pocket-tts reference (`default_parameters.py`):
+///   DEFAULT_TEMPERATURE = 0.7
+///   DEFAULT_NOISE_CLAMP = None  → represented here as Optional<Float>; nil
+///                                  means no truncation of the sampled normal.
 nonisolated struct SynthesisOptions: Sendable {
     var maxFrames: Int = 256
     var framesAfterEOS: Int = 1
-    var temperature: Float = 0.6
-    var noiseClamp: Float = 4.0
+    var temperature: Float = 0.7
+    var noiseClamp: Float? = nil
 
     init() {}
 }
@@ -478,7 +480,9 @@ actor TTSEngine: TTSEngineProtocol {
     /// Truncated normal sampler. Matches the reference FlowLM behavior
     /// (`torch.nn.init.trunc_normal_(mean=0, std=std, a=-clamp, b=clamp)`).
     /// Box-Muller for the underlying normal; rejection for the truncation.
-    private func sampleTruncNormal(count: Int, std: Float, clamp: Float) -> [Float] {
+    /// When `clamp` is nil, no truncation is applied (matches Python's
+    /// `DEFAULT_NOISE_CLAMP = None`).
+    private func sampleTruncNormal(count: Int, std: Float, clamp: Float?) -> [Float] {
         var out = [Float](); out.reserveCapacity(count)
         var generator = SystemRandomNumberGenerator()
         while out.count < count {
@@ -491,7 +495,12 @@ actor TTSEngine: TTSEngineProtocol {
             let z1 = r * sin(theta)
             for z in [z0, z1] {
                 let x = z * std
-                if x >= -clamp && x <= clamp {
+                if let c = clamp {
+                    if x >= -c && x <= c {
+                        out.append(x)
+                        if out.count == count { break }
+                    }
+                } else {
                     out.append(x)
                     if out.count == count { break }
                 }
