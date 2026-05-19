@@ -159,6 +159,12 @@ final class MultiTalkViewModel {
 
         var collected: [Float] = []
         for chunk in chunks {
+            // Cooperative cancellation between chunks. Without this, a
+            // stop press only ended the current chunk's stream — the
+            // outer `for chunk in chunks` loop kept calling
+            // `engine.synthesize` for the rest of the script and the
+            // console showed every subsequent chunk processing.
+            if Task.isCancelled { break }
             switch chunk {
             case let .text(voiceID, _, body):
                 for await frame in self.engine.synthesize(text: body, voiceID: voiceID, options: SynthesisOptions()) {
@@ -197,6 +203,10 @@ final class MultiTalkViewModel {
 
         // Phase 1: generate all audio
         for chunk in chunks {
+            // Stop button cooperation. Generation can take 20-45s per
+            // Fish chunk; without this check, every remaining chunk
+            // would generate in full before the user's stop took effect.
+            if Task.isCancelled { break }
             switch chunk {
             case let .text(voiceID, name, body):
                 chunkIndex += 1

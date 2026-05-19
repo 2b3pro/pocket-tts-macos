@@ -127,9 +127,16 @@ actor TTSEngine: TTSEngineProtocol {
     /// Errors during synthesis are logged to stderr and end the stream early.
     nonisolated func synthesize(text: String, voiceID: String, options: SynthesisOptions = SynthesisOptions()) -> AsyncStream<PCMFrame> {
         AsyncStream { continuation in
+            // When the consumer's Task is cancelled (or its iterator is
+            // dropped), `onTermination` fires. We flip the cancel flag
+            // here so the producer's AR loop notices on its next check.
+            // Without this, the unstructured `Task { ... }` below keeps
+            // running long after the user hit stop.
+            let cancel = CancellationFlag()
+            continuation.onTermination = { _ in cancel.cancel() }
             Task {
                 do {
-                    try await self.runSynthesis(text: text, voiceID: voiceID, options: options, continuation: continuation)
+                    try await self.runSynthesis(text: text, voiceID: voiceID, options: options, continuation: continuation, cancel: cancel)
                 } catch {
                     FileHandle.standardError.write(Data("synthesize failed: \(error)\n".utf8))
                 }
@@ -143,7 +150,8 @@ actor TTSEngine: TTSEngineProtocol {
         text: String,
         voiceID: String,
         options: SynthesisOptions,
-        continuation: AsyncStream<PCMFrame>.Continuation
+        continuation: AsyncStream<PCMFrame>.Continuation,
+        cancel: CancellationFlag
     ) throws {
         let wallStart = CFAbsoluteTimeGetCurrent()
         print("[PocketTTS] ── synthesis start ──")
@@ -167,8 +175,12 @@ actor TTSEngine: TTSEngineProtocol {
         let chunks = splitForTokenLimit(normalized)
         print("[PocketTTS] split into \(chunks.count) chunk(s)")
         for (i, chunk) in chunks.enumerated() {
+            if cancel.isCancelled {
+                print("[PocketTTS] cancelled before chunk \(i + 1)/\(chunks.count)")
+                break
+            }
             if chunks.count > 1 { print("[PocketTTS] chunk \(i + 1)/\(chunks.count)") }
-            try runSynthesisChunk(text: chunk, voice: voice, options: options, continuation: continuation)
+            try runSynthesisChunk(text: chunk, voice: voice, options: options, continuation: continuation, cancel: cancel)
         }
 
         let wallTotal = CFAbsoluteTimeGetCurrent() - wallStart
@@ -180,7 +192,8 @@ actor TTSEngine: TTSEngineProtocol {
         text: String,
         voice: LoadedVoice,
         options: SynthesisOptions,
-        continuation: AsyncStream<PCMFrame>.Continuation
+        continuation: AsyncStream<PCMFrame>.Continuation,
+        cancel: CancellationFlag
     ) throws {
         // Per-chunk text prep (P0-3): collapse whitespace, capitalize first,
         // ensure terminal punctuation, pad short prompts. Also yields the
@@ -227,6 +240,10 @@ actor TTSEngine: TTSEngineProtocol {
         var produced = 0
 
         for step in 0..<chunkOptions.maxFrames {
+            if cancel.isCancelled {
+                print("[PocketTTS] AR loop cancelled at frame \(step)/\(chunkOptions.maxFrames)")
+                break
+            }
             let frameOffset = Int32(tPrompt + step)
             let noise = sampleTruncNormal(count: K.ldim, std: sqrt(chunkOptions.temperature), clamp: chunkOptions.noiseClamp)
 
