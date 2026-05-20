@@ -58,6 +58,15 @@ struct MacTextEditor: NSViewRepresentable {
         scroll.drawsBackground = false
         tv.textContainerInset = NSSize(width: 4, height: 6)
 
+        // Find / Find-and-Replace bar (Cmd+F → the slide-in bar at the
+        // top of the editor with Find / Replace toggle, Done, count).
+        // The Edit > Find menu items wired in `pocket_tts_macosApp` send
+        // `performFindPanelAction:` to whatever NSTextView is first
+        // responder — opting in here means our editor is the one that
+        // responds. Incremental highlights live matches as you type.
+        tv.usesFindBar = true
+        tv.isIncrementalSearchingEnabled = true
+
         // Spell check: continuous (the red squiggle under misspellings).
         // Auto-correct intentionally OFF — replacing words without the
         // user's consent is too aggressive for a TTS prompt where the
