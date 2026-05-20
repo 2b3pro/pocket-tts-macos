@@ -76,6 +76,15 @@ final class VoiceManager {
 
         try? fm.createDirectory(at: voicesDir, withIntermediateDirectories: true)
         loadCatalog()
+
+        // Boot-time reconcile: catalog rows whose backing files have
+        // disappeared since the last run get their stale path fields
+        // nulled out so consumers never receive broken paths. The
+        // returned IDs (voices missing encoded artifacts) are not
+        // consumed here — the Voice Manager view's verifyAndEncodeVoices
+        // task handles re-encoding orchestration when that surface
+        // becomes visible.
+        verifyVoiceStates()
     }
 
     // MARK: - Import (step 1: copy WAV)
@@ -138,28 +147,47 @@ final class VoiceManager {
         voicesDir.appendingPathComponent("\(voiceID)_enhanced.wav")
     }
 
-    /// Verify cached codes files exist; clear stale paths. Returns IDs needing re-encoding.
+    /// Reconcile the in-memory catalog with the disk state. Nullifies
+    /// path fields whose target files have disappeared so the rest of
+    /// the app stops handing out broken paths. Persists the catalog
+    /// only when something actually changed. Returns the IDs of
+    /// voices that are now missing one or both encoded artifacts
+    /// (cached Fish codes or Pocket-TTS KV) — caller decides whether
+    /// to trigger re-encoding for them.
+    ///
+    /// Called at two points:
+    ///   * `init` (boot-time reconcile)
+    ///   * `verifyAndEncodeVoices` in Voice Manager view (.task)
+    ///
+    /// Idempotent — running twice in a row is a no-op on the second call.
+    @discardableResult
     func verifyVoiceStates() -> [String] {
-        var needsEncoding: [String] = []
+        var pathsCleared = 0
         for i in voices.indices {
-            if let path = voices[i].cachedCodesPath {
-                if !FileManager.default.fileExists(atPath: path) {
-                    voices[i].cachedCodesPath = nil
-                    voices[i].codesLength = nil
-                }
+            if let path = voices[i].cachedCodesPath,
+               !FileManager.default.fileExists(atPath: path)
+            {
+                voices[i].cachedCodesPath = nil
+                voices[i].codesLength = nil
+                pathsCleared += 1
             }
-            if let path = voices[i].pocketTTSKVPath {
-                if !FileManager.default.fileExists(atPath: path) {
-                    voices[i].pocketTTSKVPath = nil
-                }
-            }
-            // Need encoding if either Fish codes OR Pocket-TTS KV is missing
-            if voices[i].cachedCodesPath == nil || voices[i].pocketTTSKVPath == nil {
-                needsEncoding.append(voices[i].id)
+            if let path = voices[i].pocketTTSKVPath,
+               !FileManager.default.fileExists(atPath: path)
+            {
+                voices[i].pocketTTSKVPath = nil
+                pathsCleared += 1
             }
         }
-        if !needsEncoding.isEmpty { saveCatalog() }
-        return needsEncoding
+
+        if pathsCleared > 0 {
+            saveCatalog()
+            print("[VoiceManager] reconcile: cleared \(pathsCleared) stale path(s) on disk")
+        }
+
+        // Need re-encoding if either artifact is now nil.
+        return voices.compactMap { v in
+            (v.cachedCodesPath == nil || v.pocketTTSKVPath == nil) ? v.id : nil
+        }
     }
 
     // MARK: - Delete
