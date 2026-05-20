@@ -38,6 +38,12 @@ struct VoiceManagerView: View {
     @State private var voiceToDelete: Voice?
     @State private var encodingComplete = false
 
+    // Orphan recovery state (step 5). Populated on appear; UI section
+    // only renders when non-empty.
+    @State private var orphans: [OrphanedVoice] = []
+    @State private var orphanNames: [String: String] = [:]
+    @State private var orphanError: String? = nil
+
     // Audio playback for comparison
     @State private var isPlayingOriginal = false
     @State private var isPlayingEnhanced = false
@@ -51,6 +57,10 @@ struct VoiceManagerView: View {
                     dropZoneView
                     Divider().background(Theme.borderColor)
                     voicesList
+                    if !orphans.isEmpty {
+                        Divider().background(Theme.borderColor)
+                        orphansSection
+                    }
                     Divider().background(Theme.borderColor)
                     doneButton
                 case .savePreset:
@@ -77,7 +87,10 @@ struct VoiceManagerView: View {
                 importStep = .savePreset
             }
         }
-        .task { await verifyAndEncodeVoices() }
+        .task {
+            await verifyAndEncodeVoices()
+            refreshOrphans()
+        }
         .alert("Delete Voice", isPresented: Binding(
             get: { voiceToDelete != nil },
             set: { if !$0 { voiceToDelete = nil } }
@@ -533,6 +546,112 @@ struct VoiceManagerView: View {
         }
         .padding(.horizontal, Theme.space3).padding(.vertical, Theme.space2)
         .background(Theme.bgTertiary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
+    }
+
+    // MARK: - Orphan recovery (step 5)
+
+    private var orphansSection: some View {
+        VStack(alignment: .leading, spacing: Theme.space2) {
+            HStack {
+                Text("Recover from Disk")
+                    .font(Theme.fontSMBold)
+                    .foregroundStyle(Theme.textPrimary)
+                Spacer()
+                Text("\(orphans.count)")
+                    .font(Theme.fontXS)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            Text("\(orphans.count) voice file\(orphans.count == 1 ? "" : "s") on disk \(orphans.count == 1 ? "is" : "are") missing a catalog row. Name and adopt to restore.")
+                .font(Theme.fontXS)
+                .foregroundStyle(Theme.textSecondary)
+
+            VStack(spacing: Theme.space1) {
+                ForEach(orphans) { orphan in orphanRow(orphan) }
+            }
+
+            if let err = orphanError {
+                Text(err)
+                    .font(Theme.fontXS)
+                    .foregroundStyle(Theme.errorFG)
+            }
+        }
+    }
+
+    private func orphanRow(_ orphan: OrphanedVoice) -> some View {
+        let nameBinding = Binding<String>(
+            get: { orphanNames[orphan.id] ?? "Recovered \(orphan.id.prefix(8))" },
+            set: { orphanNames[orphan.id] = $0 }
+        )
+        return HStack(spacing: Theme.space2) {
+            // UUID prefix as a small mono-styled tag
+            Text(String(orphan.id.prefix(8)))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(Theme.textSecondary)
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(Theme.bgTertiary)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
+
+            // Companion-file indicators
+            HStack(spacing: 2) {
+                if orphan.hasCodes {
+                    indicatorBadge("codes", color: Theme.accent)
+                }
+                if orphan.hasEnhanced {
+                    indicatorBadge("✨", color: Theme.accent)
+                }
+            }
+
+            TextField("Voice name", text: nameBinding)
+                .textFieldStyle(.plain)
+                .font(Theme.fontSM)
+                .foregroundStyle(Theme.textPrimary)
+                .padding(.horizontal, Theme.space2).padding(.vertical, Theme.space1)
+                .themeInputField()
+
+            Button(action: { adoptOrphan(orphan) }) {
+                Text("Adopt")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, Theme.space3).padding(.vertical, Theme.space1)
+                    .background(Theme.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, Theme.space3).padding(.vertical, Theme.space2)
+        .background(Theme.bgTertiary.opacity(0.3))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
+    }
+
+    private func indicatorBadge(_ label: String, color: Color) -> some View {
+        Text(label)
+            .font(.system(size: 9))
+            .foregroundStyle(color)
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(color.opacity(0.15))
+            .clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
+    }
+
+    private func refreshOrphans() {
+        orphans = VoiceManager.shared.scanForOrphans()
+        // Prune the typed-name cache for orphans that vanished (already
+        // adopted or files removed).
+        let live = Set(orphans.map(\.id))
+        orphanNames = orphanNames.filter { live.contains($0.key) }
+    }
+
+    private func adoptOrphan(_ orphan: OrphanedVoice) {
+        let name = orphanNames[orphan.id] ?? "Recovered \(orphan.id.prefix(8))"
+        do {
+            try VoiceManager.shared.adoptOrphan(id: orphan.id, name: name)
+            orphans.removeAll { $0.id == orphan.id }
+            orphanNames[orphan.id] = nil
+            orphanError = nil
+        } catch let error as VoiceManager.OrphanAdoptionError {
+            orphanError = error.errorDescription
+        } catch {
+            orphanError = "Adoption failed: \(error.localizedDescription)"
+        }
     }
 
     private func statusBadges(_ voice: Voice) -> [String] {

@@ -35,6 +35,28 @@ struct Voice: Identifiable, Codable, Equatable, Sendable {
     var rmsTargetDB: Float?
 }
 
+// MARK: - OrphanedVoice
+// Files-on-disk-without-a-catalog-row case (the dual of stale catalog
+// rows handled by `verifyVoiceStates`). Surfaced by `scanForOrphans`
+// so the Voice Manager UI can offer adoption. An orphan only qualifies
+// if both the KV and WAV are present and the KV passes a cheap
+// header-parse — partial / corrupt files are logged and skipped so
+// the user only sees adoptable candidates.
+
+struct OrphanedVoice: Identifiable, Equatable, Sendable {
+    /// UUID extracted from the `<UUID>_kv.safetensors` filename.
+    let id: String
+    /// Always true (a precondition for being surfaced).
+    let hasKV: Bool
+    /// Always true (a precondition for being surfaced).
+    let hasWAV: Bool
+    /// Whether Fish DAC codes are present too. Influences post-adopt
+    /// behavior (false → Fish backend will need to re-encode the WAV).
+    let hasCodes: Bool
+    /// Whether the LavaSR-enhanced WAV is present too.
+    let hasEnhanced: Bool
+}
+
 // MARK: - VoiceManager
 
 @MainActor
@@ -187,6 +209,160 @@ final class VoiceManager {
         // Need re-encoding if either artifact is now nil.
         return voices.compactMap { v in
             (v.cachedCodesPath == nil || v.pocketTTSKVPath == nil) ? v.id : nil
+        }
+    }
+
+    // MARK: - Orphan recovery
+    // The dual of `verifyVoiceStates`: detect files in saved-voices/
+    // that have no catalog row, surface the adoptable ones to the UI.
+
+    /// Scan saved-voices/ for `<UUID>_kv.safetensors` files whose UUID
+    /// is not in the catalog. Surfaces only the ones that:
+    ///   * have a companion `<UUID>.wav`
+    ///   * have a KV file whose safetensors header parses
+    /// Anything else (KV-only, WAV-only, garbled KV) gets logged and
+    /// dropped from the result. Returned IDs are stable — the caller
+    /// can match against UI state.
+    func scanForOrphans() -> [OrphanedVoice] {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(at: voicesDir, includingPropertiesForKeys: nil) else {
+            return []
+        }
+
+        let catalogIDs = Set(voices.map(\.id))
+        let kvSuffix = "_kv.safetensors"
+        var orphans: [OrphanedVoice] = []
+
+        for url in entries {
+            let name = url.lastPathComponent
+            guard name.hasSuffix(kvSuffix) else { continue }
+            let id = String(name.dropLast(kvSuffix.count))
+            if catalogIDs.contains(id) { continue }   // healthy, has catalog row
+
+            // Validate KV header cheaply before surfacing.
+            if !validateSafetensorsHeader(at: url) {
+                print("[VoiceManager] orphan KV unparseable, skipping: \(name)")
+                continue
+            }
+
+            let wavURL = voicesDir.appendingPathComponent("\(id).wav")
+            let hasWAV = fm.fileExists(atPath: wavURL.path)
+            if !hasWAV {
+                print("[VoiceManager] orphan KV without companion WAV, skipping: \(id)")
+                continue
+            }
+
+            let codesURL = voicesDir.appendingPathComponent("\(id)_codes.npy")
+            let enhancedURL = voicesDir.appendingPathComponent("\(id)_enhanced.wav")
+
+            orphans.append(OrphanedVoice(
+                id: id,
+                hasKV: true,
+                hasWAV: true,
+                hasCodes: fm.fileExists(atPath: codesURL.path),
+                hasEnhanced: fm.fileExists(atPath: enhancedURL.path)
+            ))
+        }
+
+        return orphans
+    }
+
+    /// Adopt an orphan: create a catalog row for it under the supplied
+    /// display name. The on-disk files are left where they are — only
+    /// metadata changes. Throws if the orphan isn't actually adoptable
+    /// (KV / WAV missing, can't parse) or the name is empty.
+    @discardableResult
+    func adoptOrphan(id: String, name: String) throws -> Voice {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            throw OrphanAdoptionError.emptyName
+        }
+        guard !voices.contains(where: { $0.id == id }) else {
+            throw OrphanAdoptionError.alreadyAdopted
+        }
+
+        let wavURL = voicesDir.appendingPathComponent("\(id).wav")
+        let kvURL = voicesDir.appendingPathComponent("\(id)_kv.safetensors")
+        let codesURL = voicesDir.appendingPathComponent("\(id)_codes.npy")
+        let enhancedURL = voicesDir.appendingPathComponent("\(id)_enhanced.wav")
+
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: wavURL.path), fm.fileExists(atPath: kvURL.path) else {
+            throw OrphanAdoptionError.filesMissing
+        }
+        guard validateSafetensorsHeader(at: kvURL) else {
+            throw OrphanAdoptionError.kvUnparseable
+        }
+
+        // Build catalog row. `createdAt` reflects the file's mtime so
+        // the adoption preserves chronology when the user is restoring
+        // a backup.
+        let createdAt = (try? fm.attributesOfItem(atPath: wavURL.path)[.creationDate] as? Date) ?? Date()
+
+        let voice = Voice(
+            id: id,
+            name: trimmedName,
+            description: "",
+            wavPath: wavURL.path,
+            createdAt: createdAt,
+            transcript: nil,
+            transcribedAt: nil,
+            cachedCodesPath: fm.fileExists(atPath: codesURL.path) ? codesURL.path : nil,
+            codesLength: nil,
+            isEnhanced: fm.fileExists(atPath: enhancedURL.path),
+            pocketTTSKVPath: kvURL.path,
+            rmsTargetDB: nil
+        )
+
+        voices.append(voice)
+        sortVoices()
+        saveCatalog()
+        print("[VoiceManager] adopted orphan \(id) as '\(trimmedName)'")
+        return voice
+    }
+
+    // MARK: - Safetensors header validation
+    // Cheapest possible "is this a real safetensors file" check: the
+    // format prefixes the binary tensor data with an 8-byte LE uint64
+    // header length followed by that many bytes of JSON metadata.
+    // We just confirm the JSON parses and contains object keys — that
+    // rules out truncated / wrong-format / zero-byte files without
+    // loading the model itself. ~150 us per call.
+
+    private func validateSafetensorsHeader(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+
+        guard let lenData = try? handle.read(upToCount: 8), lenData.count == 8 else {
+            return false
+        }
+        let headerLen = lenData.withUnsafeBytes { $0.load(as: UInt64.self) }
+        // Sanity bounds: header is non-empty and < 16 MB.
+        guard headerLen > 0, headerLen < 16 * 1024 * 1024 else { return false }
+
+        guard let headerData = try? handle.read(upToCount: Int(headerLen)),
+              headerData.count == Int(headerLen) else {
+            return false
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: headerData) as? [String: Any] else {
+            return false
+        }
+        return !json.isEmpty
+    }
+
+    enum OrphanAdoptionError: LocalizedError {
+        case emptyName
+        case alreadyAdopted
+        case filesMissing
+        case kvUnparseable
+
+        var errorDescription: String? {
+            switch self {
+            case .emptyName:        return "Please provide a name for the recovered voice."
+            case .alreadyAdopted:   return "This voice is already in the catalog."
+            case .filesMissing:     return "The voice's files are no longer on disk."
+            case .kvUnparseable:    return "The voice's KV file is corrupt or wrong format."
+            }
         }
     }
 
