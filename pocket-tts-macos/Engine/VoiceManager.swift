@@ -53,10 +53,28 @@ final class VoiceManager {
     private init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let appDir = appSupport.appendingPathComponent("pocket-tts-macos", isDirectory: true)
-        self.voicesDir = appDir.appendingPathComponent("fish-voices", isDirectory: true)
+        self.voicesDir = appDir.appendingPathComponent("saved-voices", isDirectory: true)
         self.catalogURL = voicesDir.appendingPathComponent("voices.json")
 
-        try? FileManager.default.createDirectory(at: voicesDir, withIntermediateDirectories: true)
+        // One-shot migration from the legacy `fish-voices/` directory.
+        // The voice-import pipeline used to be Fish-specific; it now
+        // produces voices for both backends, so the directory name is
+        // backend-agnostic. Migration is in-place — moves the existing
+        // dir (with all WAV / codes / KV files + voices.json) en bloc.
+        // No-op if `saved-voices/` already exists (already migrated or
+        // fresh install) or if `fish-voices/` doesn't exist (truly fresh).
+        let legacyDir = appDir.appendingPathComponent("fish-voices", isDirectory: true)
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: voicesDir.path) && fm.fileExists(atPath: legacyDir.path) {
+            do {
+                try fm.moveItem(at: legacyDir, to: voicesDir)
+                print("[VoiceManager] migrated fish-voices/ → saved-voices/")
+            } catch {
+                print("[VoiceManager] migration fish-voices/ → saved-voices/ failed: \(error)")
+            }
+        }
+
+        try? fm.createDirectory(at: voicesDir, withIntermediateDirectories: true)
         loadCatalog()
     }
 

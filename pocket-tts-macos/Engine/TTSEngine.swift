@@ -652,13 +652,23 @@ actor TTSEngine: TTSEngineProtocol {
 
     private nonisolated static func findImportedVoiceKVPath(importID: String) throws -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let voicesDir = appSupport.appendingPathComponent("pocket-tts-macos/fish-voices", isDirectory: true)
+        let appDir = appSupport.appendingPathComponent("pocket-tts-macos", isDirectory: true)
+
+        // Resolve the active voices directory. VoiceManager.init runs a
+        // one-shot fish-voices/ → saved-voices/ migration; if that
+        // already ran (or this is a fresh install) we use saved-voices/.
+        // The legacy fallback covers the unlikely race where this
+        // engine path fires before VoiceManager has been touched.
+        let savedDir = appDir.appendingPathComponent("saved-voices", isDirectory: true)
+        let legacyDir = appDir.appendingPathComponent("fish-voices", isDirectory: true)
+        let fm = FileManager.default
+        let voicesDir = fm.fileExists(atPath: savedDir.path) ? savedDir : legacyDir
         let catalogURL = voicesDir.appendingPathComponent("voices.json")
 
         // Try reading persisted path from catalog. voices.json stores
         // basenames (post step-2 path migration); legacy data may have
         // absolutes. lastPathComponent normalizes either case, then we
-        // resolve against the current voicesDir.
+        // resolve against the active voicesDir.
         if let data = try? Data(contentsOf: catalogURL) {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
@@ -668,7 +678,7 @@ actor TTSEngine: TTSEngineProtocol {
             {
                 let basename = (storedKV as NSString).lastPathComponent
                 let kvURL = voicesDir.appendingPathComponent(basename)
-                if FileManager.default.fileExists(atPath: kvURL.path) {
+                if fm.fileExists(atPath: kvURL.path) {
                     return kvURL
                 }
             }
@@ -676,7 +686,7 @@ actor TTSEngine: TTSEngineProtocol {
 
         // Fallback to conventional path
         let fallback = voicesDir.appendingPathComponent("\(importID)_kv.safetensors")
-        guard FileManager.default.fileExists(atPath: fallback.path) else {
+        guard fm.fileExists(atPath: fallback.path) else {
             throw TTSEngineError.voiceNotFound("imported:\(importID) — KV not found")
         }
         return fallback
