@@ -5,6 +5,7 @@
 //  Ports Electron's TextInput.tsx — label bar + pause-insert + big textarea
 //  + word/char counters.
 
+import AppKit
 import SwiftUI
 
 struct TextInput: View {
@@ -22,6 +23,11 @@ struct TextInput: View {
     /// rather than at end-of-buffer. Single Voice doesn't pass one (no
     /// inline insertion needed there).
     var editorBridge: TextEditorBridge?
+    /// Optional per-tag-name colors passed through to the underlying
+    /// MacTextEditor. Multi-Talk uses this to color `{Speaker N}` tags.
+    /// nil → no colorization (Single Voice + any caller that doesn't
+    /// care about tags).
+    var tagColors: [String: NSColor]? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.space3) {
@@ -106,7 +112,7 @@ struct TextInput: View {
                         .padding(.vertical, Theme.space3 + 4)
                         .allowsHitTesting(false)
                 }
-                MacTextEditor(text: $text, isEditable: !disabled, bridge: editorBridge)
+                MacTextEditor(text: $text, isEditable: !disabled, bridge: editorBridge, tagColors: tagColors)
                     .padding(.horizontal, Theme.space4 - 4)
                     .padding(.vertical, Theme.space3 - 6)
                     .accessibilityIdentifier(accessibilityID)

@@ -29,6 +29,10 @@ struct SpeakerCard: View {
     let onInsertToScript: (String) -> Void
     let onRemove: () -> Void
     let cardIndex: Int
+    /// When non-nil, the speaker name field renders in this color.
+    /// Wired from the Multi-Talk display panel's "Speaker colors"
+    /// toggle; nil → default `Theme.textPrimary`.
+    var nameColor: Color? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.space3) {
@@ -37,7 +41,7 @@ struct SpeakerCard: View {
                 TextField("Speaker name", text: $speaker.name)
                     .textFieldStyle(.plain)
                     .font(Theme.fontSMBold)
-                    .foregroundStyle(Theme.textPrimary)
+                    .foregroundStyle(nameColor ?? Theme.textPrimary)
                     .disabled(disabled)
                     .accessibilityIdentifier("speakerCard.\(cardIndex).nameField")
 

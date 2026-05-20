@@ -327,6 +327,7 @@ struct ContentView: View {
             case .multi:
                 MultiTalkView(
                     viewModel: multiVM,
+                    appState: appState,
                     voices: voices,
                     pendingReuse: $appState.pendingReuse,
                     chatSettings: $appState.chatSettings
