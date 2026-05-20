@@ -669,8 +669,12 @@ struct VoiceManagerView: View {
         guard let url = pendingFileURL else { return }
         let name = voiceName.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return }
-        guard url.startAccessingSecurityScopedResource() else { return }
-        defer { url.stopAccessingSecurityScopedResource() }
+        // File-importer URLs are security-scoped (start returns true);
+        // drag-dropped URLs are not (start returns false). Treat the
+        // scope as best-effort instead of a guard — if we can't claim
+        // it we still try to read, which works for the drag-drop case.
+        let didStartScope = url.startAccessingSecurityScopedResource()
+        defer { if didStartScope { url.stopAccessingSecurityScopedResource() } }
         do {
             let voice = try VoiceManager.shared.importVoice(from: url, name: name)
             if !voiceDescription.isEmpty { VoiceManager.shared.setDescription(voiceDescription, for: voice.id) }
