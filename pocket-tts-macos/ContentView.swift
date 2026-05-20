@@ -56,6 +56,16 @@ struct ContentView: View {
         .onChange(of: appState.engineStatus) { _, newStatus in
             if case .ready = newStatus { spinUpViewModels() }
         }
+        .onChange(of: appState.chatSettings.fishParams) { _, _ in
+            // Fish sliders (Temperature / Top P / Top K) live in
+            // `BackendSelector` and mutate `fishParams` directly via
+            // @Binding; none of the existing save triggers (sheet
+            // dismissal, backend toggle) fire while the user drags,
+            // so without this the values reset to defaults on relaunch.
+            // `FishGenParams` is Equatable, so .onChange fires only
+            // when the struct actually changes.
+            SettingsStore.save(appState.chatSettings)
+        }
         .onChange(of: appState.chatSettings.activeBackend) { _, newBackend in
             SettingsStore.save(appState.chatSettings)
             // Reset voice selection to avoid picker tag mismatch
