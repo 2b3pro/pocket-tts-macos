@@ -5,7 +5,6 @@
 
 import CoreML
 import Foundation
-import NaturalLanguage
 
 // MARK: - PCMFrame
 /// 80 ms of mono PCM @ 24 kHz (1920 samples). The unit Mimi emits per
@@ -16,13 +15,24 @@ nonisolated struct PCMFrame: Sendable {
 }
 
 // MARK: - SynthesisOptions
-/// Phase 0c default values match the pocket-tts Python reference for the
-/// validated test phrase. The conversion project's `e2e_python.py` runs at these.
+/// Defaults match the Python pocket-tts reference (`default_parameters.py`):
+///   DEFAULT_TEMPERATURE = 0.7
+///   DEFAULT_NOISE_CLAMP = None  → represented here as Optional<Float>; nil
+///                                  means no truncation of the sampled normal.
 nonisolated struct SynthesisOptions: Sendable {
     var maxFrames: Int = 256
     var framesAfterEOS: Int = 1
-    var temperature: Float = 0.6
-    var noiseClamp: Float = 4.0
+    var temperature: Float = 0.7
+    var noiseClamp: Float? = nil
+
+    /// Per-chunk SentencePiece-token budget for the sentence-aware
+    /// splitter. Smaller = shorter chunks = less per-chunk AR error
+    /// accumulation, at the cost of more chunk-boundary resets.
+    /// Python's reference uses 50 (matching the fp32 model's tolerance);
+    /// our Core ML build is fp16 and may benefit from a smaller value
+    /// on long-sentence inputs. Surfaced as a Settings slider so the
+    /// user can tune per script. Range used by the UI: 15–50.
+    var chunkTokenBudget: Int = 50
 
     init() {}
 }
@@ -60,6 +70,47 @@ private nonisolated enum K {
     static let tTextMax = 128
     static let mimiOffsetPerFrame: Int32 = 16
     static let mimiPCMPerFrame = 1920
+    /// Output sample rate of the Mimi decoder. Used to size pause
+    /// silence segments by seconds → samples.
+    static let sampleRate = 24_000
+    /// 80 ms linear fade window applied at pause boundaries. Matches
+    /// Python's `int(0.08 * self.sample_rate)` at `tts_model.py:497`.
+    /// At 24 kHz that's exactly one Mimi PCM frame — convenient.
+    static let fadeSamples = Int(0.08 * Double(sampleRate))
+
+    /// Per-chunk SentencePiece-token budget for the sentence-aware
+    /// splitter. Matches Python `max_nb_tokens_in_a_chunk = 50` in
+    /// `split_into_best_sentences` — empirically tuned to keep
+    /// cumulative AR error from compounding at the back end of long
+    /// generations. Smaller than the model's 128-token hard limit on
+    /// purpose; packing fewer tokens per chunk gives noticeably better
+    /// prosody on multi-sentence input.
+    static let chunkTokenBudget = 50
+
+    /// EOS-decision smoothing (P-EOS-2). The Core ML CaLM model exposes
+    /// the raw `eos_logit` as a third output post the conversion-side
+    /// rebuild that addressed fp16 AR drift. The CaLM model uses an
+    /// internal threshold of -4.0 (matching `is_eos`), but the fp16-
+    /// perturbed logit can spike above threshold transiently before
+    /// settling — the canonical apples-to-apples trace showed CM's
+    /// single-frame "fire" at step 32 while the fp32 reference didn't
+    /// fire until step 35.
+    ///
+    /// Smoothing rule: require `eos_logit > eosLogitThreshold` for
+    /// `eosConsecutiveFrames` consecutive AR steps. On the canonical,
+    /// 3-frame consecutive shifts the CM fire from step 32 → step 34,
+    /// landing 1 frame ahead of the fp32 reference. Tunable as the
+    /// symptom evolves.
+    static let eosLogitThreshold: Float = -4.0
+    static let eosConsecutiveFrames = 3
+
+    /// Diagnostic: log per-step `eos_logit` trajectory for every AR
+    /// chunk to the console. Format mirrors the conversion project's
+    /// `probe_eos_apples_to_apples.py` table so traces can be pasted
+    /// straight into the agent's analysis pipeline. Off by default
+    /// (verbose — hundreds of lines per synthesize call); flip true
+    /// when investigating EOS/tail issues against captured user audio.
+    static let eosTraceEnabled = false
 }
 
 // MARK: - TTSEngine
@@ -117,9 +168,16 @@ actor TTSEngine: TTSEngineProtocol {
     /// Errors during synthesis are logged to stderr and end the stream early.
     nonisolated func synthesize(text: String, voiceID: String, options: SynthesisOptions = SynthesisOptions()) -> AsyncStream<PCMFrame> {
         AsyncStream { continuation in
+            // When the consumer's Task is cancelled (or its iterator is
+            // dropped), `onTermination` fires. We flip the cancel flag
+            // here so the producer's AR loop notices on its next check.
+            // Without this, the unstructured `Task { ... }` below keeps
+            // running long after the user hit stop.
+            let cancel = CancellationFlag()
+            continuation.onTermination = { _ in cancel.cancel() }
             Task {
                 do {
-                    try await self.runSynthesis(text: text, voiceID: voiceID, options: options, continuation: continuation)
+                    try await self.runSynthesis(text: text, voiceID: voiceID, options: options, continuation: continuation, cancel: cancel)
                 } catch {
                     FileHandle.standardError.write(Data("synthesize failed: \(error)\n".utf8))
                 }
@@ -133,7 +191,8 @@ actor TTSEngine: TTSEngineProtocol {
         text: String,
         voiceID: String,
         options: SynthesisOptions,
-        continuation: AsyncStream<PCMFrame>.Continuation
+        continuation: AsyncStream<PCMFrame>.Continuation,
+        cancel: CancellationFlag
     ) throws {
         let wallStart = CFAbsoluteTimeGetCurrent()
         print("[PocketTTS] ── synthesis start ──")
@@ -153,12 +212,48 @@ actor TTSEngine: TTSEngineProtocol {
         let voiceMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
         print("[PocketTTS] voice load: \(String(format: "%.1f", voiceMs))ms (T_voice=\(voice.tVoice))")
 
-        let normalized = TextNormalizer.normalize(text)
-        let chunks = splitForTokenLimit(normalized)
-        print("[PocketTTS] split into \(chunks.count) chunk(s)")
-        for (i, chunk) in chunks.enumerated() {
-            if chunks.count > 1 { print("[PocketTTS] chunk \(i + 1)/\(chunks.count)") }
-            try runSynthesisChunk(text: chunk, voice: voice, options: options, continuation: continuation)
+        // P0-4: parse `[Xs]` pause markers FIRST, before normalization.
+        // Mirrors Python's `parse_pause_markers(text_to_generate)` call
+        // at the top of `generate_audio_stream`. Single-Voice users can
+        // now drop `[1.5s]` etc. in their input and we'll emit silence
+        // + apply 80 ms boundary fades to the audio around it.
+        let segments = TextNormalizer.parsePauseMarkers(text)
+        if segments.count > 1 {
+            print("[PocketTTS] parsed \(segments.count) segments (\(segments.filter(\.isPause).count) pauses)")
+        }
+
+        // Identify the index of the absolute final TEXT segment so the
+        // AR-loop final-frame contract (Bug 1's fix) still fires
+        // correctly: `isFinal=true` lands on the last frame of the last
+        // chunk of the last text segment, regardless of trailing
+        // pause / silence frames.
+        let lastTextSegmentIndex = segments.lastIndex(where: {
+            if case .text = $0 { return true } else { return false }
+        }) ?? -1
+
+        for (segIdx, segment) in segments.enumerated() {
+            if cancel.isCancelled {
+                print("[PocketTTS] cancelled before segment \(segIdx + 1)/\(segments.count)")
+                break
+            }
+            switch segment {
+            case let .text(body):
+                let prevIsPause = segIdx > 0 && segments[segIdx - 1].isPause
+                let nextIsPause = segIdx + 1 < segments.count && segments[segIdx + 1].isPause
+                let isLastTextSegment = segIdx == lastTextSegmentIndex
+                try runTextSegment(
+                    text: body,
+                    voice: voice,
+                    options: options,
+                    continuation: continuation,
+                    cancel: cancel,
+                    isLastTextSegment: isLastTextSegment,
+                    prevIsPause: prevIsPause,
+                    nextIsPause: nextIsPause
+                )
+            case let .pause(seconds):
+                yieldSilence(seconds: seconds, continuation: continuation, cancel: cancel)
+            }
         }
 
         let wallTotal = CFAbsoluteTimeGetCurrent() - wallStart
@@ -166,20 +261,244 @@ actor TTSEngine: TTSEngineProtocol {
         print("[PocketTTS] ── synthesis end ──")
     }
 
+    // MARK: - Per-text-segment dispatch
+
+    /// Drives the existing chunker + AR loop for ONE text segment
+    /// (one element from `parsePauseMarkers`'s output that's a
+    /// `.text(...)` case). Adds a 1-frame buffer wrapped around the
+    /// AR yields so we can apply an 80 ms linear fade-out to the LAST
+    /// PCM frame of the segment when a pause follows. Fade-in to the
+    /// first frame is applied inline when a pause preceded.
+    ///
+    /// Latency cost: the buffer delays every yield by one frame
+    /// (80 ms). The user perceives a slightly later start to playback
+    /// but it's well below the human-perception threshold and Python's
+    /// reference implementation has the same delay by design.
+    private func runTextSegment(
+        text: String,
+        voice: LoadedVoice,
+        options: SynthesisOptions,
+        continuation: AsyncStream<PCMFrame>.Continuation,
+        cancel: CancellationFlag,
+        isLastTextSegment: Bool,
+        prevIsPause: Bool,
+        nextIsPause: Bool
+    ) throws {
+        let normalized = TextNormalizer.normalize(text)
+        let chunks = splitForTokenLimit(normalized, budget: options.chunkTokenBudget)
+        print("[PocketTTS] split into \(chunks.count) chunk(s) (budget \(options.chunkTokenBudget))")
+
+        // One-frame buffer. `pending` holds the most recently produced
+        // PCM frame; we yield it on the NEXT frame's arrival, which
+        // means by the time the chunk loop exits, exactly one frame is
+        // still buffered. That's where the optional fade-out goes.
+        var pending: PCMFrame? = nil
+        var isFirstFrameOfSegment = true
+
+        let chunkYield: (PCMFrame) -> Void = { incoming in
+            // Apply fade-in to the absolute first audio frame of this
+            // text segment when a pause immediately preceded.
+            var prepared = incoming
+            if isFirstFrameOfSegment && prevIsPause {
+                prepared = PCMFrame(
+                    samples: Self.applyLinearFadeIn(prepared.samples, fadeSamples: K.fadeSamples),
+                    isFinal: prepared.isFinal
+                )
+            }
+            isFirstFrameOfSegment = false
+
+            if let prev = pending {
+                continuation.yield(prev)
+            }
+            pending = prepared
+        }
+
+        for (i, chunk) in chunks.enumerated() {
+            if cancel.isCancelled {
+                print("[PocketTTS] cancelled before chunk \(i + 1)/\(chunks.count)")
+                break
+            }
+            if chunks.count > 1 { print("[PocketTTS] chunk \(i + 1)/\(chunks.count)") }
+            // The absolute-last-frame `isFinal=true` contract: only set
+            // when this is the last chunk of the last text segment.
+            // Pause-segment silence frames never trigger isFinal.
+            let isLastChunk = isLastTextSegment && (i == chunks.count - 1)
+            try runSynthesisChunk(
+                text: chunk,
+                voice: voice,
+                options: options,
+                yield: chunkYield,
+                cancel: cancel,
+                isLastChunk: isLastChunk
+            )
+        }
+
+        // Flush the buffered final frame with optional fade-out when a
+        // pause follows. Mirrors `tts_model.py:556-562`.
+        if let final = pending {
+            let out: PCMFrame
+            if nextIsPause {
+                out = PCMFrame(
+                    samples: Self.applyLinearFadeOut(final.samples, fadeSamples: K.fadeSamples),
+                    isFinal: final.isFinal
+                )
+            } else {
+                out = final
+            }
+            continuation.yield(out)
+        }
+    }
+
+    /// Emits zero-filled PCM frames totalling at least `seconds` of
+    /// silence, in 1920-sample chunks (one PCMFrame each). Polls the
+    /// cancellation flag between frames so a long pause doesn't block
+    /// the stop button. Always uses `isFinal: false` — even if the
+    /// pause is the very last segment, the audio that preceded it
+    /// already raised isFinal on its actual final frame.
+    private nonisolated func yieldSilence(
+        seconds: Double,
+        continuation: AsyncStream<PCMFrame>.Continuation,
+        cancel: CancellationFlag
+    ) {
+        let totalSamples = max(0, Int((seconds * Double(K.sampleRate)).rounded()))
+        if totalSamples == 0 { return }
+        let frameSize = K.mimiPCMPerFrame
+        let zeros = [Float](repeating: 0, count: frameSize)
+        var emitted = 0
+        while emitted < totalSamples {
+            if cancel.isCancelled {
+                print("[PocketTTS] silence cancelled at \(emitted)/\(totalSamples) samples")
+                return
+            }
+            let remaining = totalSamples - emitted
+            if remaining >= frameSize {
+                continuation.yield(PCMFrame(samples: zeros, isFinal: false))
+                emitted += frameSize
+            } else {
+                // Tail partial frame.
+                continuation.yield(PCMFrame(samples: [Float](repeating: 0, count: remaining), isFinal: false))
+                emitted += remaining
+            }
+        }
+    }
+
+    // MARK: - Boundary fade helpers (P0-4 / P0-5)
+    //
+    // Linear ramp over the first / last `fadeSamples` samples of a
+    // buffer. Port of the Python idiom:
+    //   buffered_chunk[:n] *= torch.linspace(0.0, 1.0, n)  // fade-in
+    //   buffered_chunk[-n:] *= torch.linspace(1.0, 0.0, n) // fade-out
+    // The Python `linspace(a, b, n)` is INCLUSIVE on both ends — same
+    // here. With n == count (typical when fade covers a whole 1920-
+    // sample frame), the very first sample is multiplied by 0 and the
+    // very last by 1 on fade-in (and reversed on fade-out).
+
+    nonisolated static func applyLinearFadeIn(_ samples: [Float], fadeSamples: Int) -> [Float] {
+        let n = min(fadeSamples, samples.count)
+        if n <= 0 { return samples }
+        var out = samples
+        if n == 1 {
+            out[0] = 0
+            return out
+        }
+        let denom = Float(n - 1)
+        for i in 0..<n {
+            out[i] *= Float(i) / denom
+        }
+        return out
+    }
+
+    /// Apply a linear fade ramp across a slice of a multi-frame tail
+    /// region to the supplied frame's samples. Used by the AR loop to
+    /// taper the EOS frame + post-EOS tail across multiple PCMFrame
+    /// yields. The total ramp spans `totalTailFrames * samples.count`
+    /// samples — gain is 1.0 at sample 0 of the EOS frame and 0.0 at
+    /// the last sample of the final tail frame; everything between
+    /// linearly interpolates.
+    ///
+    ///   * `framesIntoTail` — index of this frame within the tail
+    ///     region. 0 = the EOS-detection frame itself.
+    ///   * `totalTailFrames` — total frame count in the tail region.
+    ///     `framesAfterEOS + 1` (EOS frame + N trailing).
+    ///
+    /// Returns input unchanged if `totalTailFrames <= 1` or the
+    /// frame index is out of range.
+    nonisolated static func applyTailFade(
+        _ samples: [Float],
+        framesIntoTail: Int,
+        totalTailFrames: Int
+    ) -> [Float] {
+        guard totalTailFrames > 1, framesIntoTail >= 0, framesIntoTail < totalTailFrames else {
+            return samples
+        }
+        let perFrame = samples.count
+        let totalSamples = totalTailFrames * perFrame
+        let baseGlobal = framesIntoTail * perFrame
+        let denom = Float(totalSamples - 1)
+        var out = samples
+        for i in 0..<perFrame {
+            let globalIdx = baseGlobal + i
+            let gain = 1.0 - Float(globalIdx) / denom
+            out[i] *= gain
+        }
+        return out
+    }
+
+    nonisolated static func applyLinearFadeOut(_ samples: [Float], fadeSamples: Int) -> [Float] {
+        let n = min(fadeSamples, samples.count)
+        if n <= 0 { return samples }
+        var out = samples
+        if n == 1 {
+            out[out.count - 1] = 0
+            return out
+        }
+        let denom = Float(n - 1)
+        let start = out.count - n
+        for i in 0..<n {
+            // Ramp from 1.0 (at i = 0 of the ramp) down to 0.0 (at i = n - 1).
+            out[start + i] *= Float(n - 1 - i) / denom
+        }
+        return out
+    }
+
+    /// Synthesize one text chunk through the prompt-phase + AR loop.
+    /// Yields PCM frames via the caller-supplied `yield` closure rather
+    /// than directly to the AsyncStream continuation — `runTextSegment`
+    /// wraps `yield` with a 1-frame buffer so it can apply boundary
+    /// fades to the segment's first / last frame.
     private func runSynthesisChunk(
         text: String,
         voice: LoadedVoice,
         options: SynthesisOptions,
-        continuation: AsyncStream<PCMFrame>.Continuation
+        yield: (PCMFrame) -> Void,
+        cancel: CancellationFlag,
+        isLastChunk: Bool
     ) throws {
+        // Per-chunk text prep (P0-3): collapse whitespace, capitalize first,
+        // ensure terminal punctuation, pad short prompts. Also yields the
+        // per-chunk `framesAfterEosGuess` we add 2 to for trailing tail.
+        guard let prepared = TextPreprocessor.prepareTextPrompt(text) else { return }
+        var chunkOptions = options
+        chunkOptions.framesAfterEOS = prepared.framesAfterEosGuess + 2
+
+        if K.eosTraceEnabled {
+            // Header for the trace block — text first 80 chars + the
+            // per-chunk tail-frame budget so we can correlate the
+            // step number where smoothedFire lands against the chunk
+            // length and shape.
+            let textPreview = prepared.text.prefix(80)
+            print("[EOS-TRACE] === chunk text: \"\(textPreview)\" framesAfterEOS=\(chunkOptions.framesAfterEOS) ===")
+            print("[EOS-TRACE] step    logit  counter  fire")
+        }
+
         // 1) Tokenize.
         let tTokenize = CFAbsoluteTimeGetCurrent()
-        let (tokens, textLen) = try tokenizer.encode(text, paddedLength: K.tTextMax)
+        let (tokens, textLen) = try tokenizer.encode(prepared.text, paddedLength: K.tTextMax)
         guard textLen <= K.tTextMax else {
             throw TTSEngineError.textOverflow(actualTokens: textLen, max: K.tTextMax)
         }
         let tokenizeMs = (CFAbsoluteTimeGetCurrent() - tTokenize) * 1000
-        print("[PocketTTS] tokenize: \(String(format: "%.1f", tokenizeMs))ms (\(textLen) tokens)")
+        print("[PocketTTS] tokenize: \(String(format: "%.1f", tokenizeMs))ms (\(textLen) tokens, framesAfterEOS=\(chunkOptions.framesAfterEOS))")
 
         // 2) Fresh states for each synthesize call (no carry-over from prior runs).
         let promptState = promptModel.makeState()
@@ -206,19 +525,47 @@ actor TTSEngine: TTSEngineProtocol {
         // 6) AR loop: CaLM → next_latent → Mimi → PCM frame → emit.
         var prevLatent = [Float](repeating: .nan, count: 1 * 1 * K.ldim)   // BOS = NaN
         var eosStep: Int? = nil
+        // P-EOS-2: smoothed-fire counter. Increments each AR step the
+        // raw `eos_logit` is above threshold; resets to 0 the moment
+        // it drops below. EOS fires when the counter reaches
+        // `K.eosConsecutiveFrames`. On the canonical reference trace
+        // this lands within 1 frame of the fp32 reference.
+        var consecutiveAboveThreshold = 0
         let loopStart = CFAbsoluteTimeGetCurrent()
         var produced = 0
 
-        for step in 0..<options.maxFrames {
+        for step in 0..<chunkOptions.maxFrames {
+            if cancel.isCancelled {
+                print("[PocketTTS] AR loop cancelled at frame \(step)/\(chunkOptions.maxFrames)")
+                break
+            }
             let frameOffset = Int32(tPrompt + step)
-            let noise = sampleTruncNormal(count: K.ldim, std: sqrt(options.temperature), clamp: options.noiseClamp)
+            let noise = sampleTruncNormal(count: K.ldim, std: sqrt(chunkOptions.temperature), clamp: chunkOptions.noiseClamp)
 
-            let (nextLatent, isEos) = try runCaLMStep(
+            let (nextLatent, eosLogit) = try runCaLMStep(
                 state: calmState,
                 prevLatent: prevLatent,
                 offset: frameOffset,
                 noise: noise
             )
+
+            // Update the consecutive-above-threshold counter; a single
+            // dip resets it. Translates the model's noisy logit into
+            // a stable "EOS detected" decision.
+            if eosLogit > K.eosLogitThreshold {
+                consecutiveAboveThreshold += 1
+            } else {
+                consecutiveAboveThreshold = 0
+            }
+            let smoothedIsEos = consecutiveAboveThreshold >= K.eosConsecutiveFrames
+
+            if K.eosTraceEnabled {
+                let fireMark = (smoothedIsEos && eosStep == nil) ? "FIRE" : (smoothedIsEos ? "yes " : "no  ")
+                print(String(
+                    format: "[EOS-TRACE] %4d  %7.3f  %3d      %@",
+                    step, eosLogit, consecutiveAboveThreshold, fireMark
+                ))
+            }
 
             let pcm = try runMimiStep(
                 state: mimiState,
@@ -227,11 +574,54 @@ actor TTSEngine: TTSEngineProtocol {
             )
 
             produced = step + 1
-            let final = isEos && eosStep == nil ? false : (eosStep.map { step >= $0 + options.framesAfterEOS } ?? false)
-            continuation.yield(PCMFrame(samples: pcm, isFinal: final))
+            // `isFinal` is a stream-wide signal — only the absolute last
+            // frame of the whole synthesize call gets it. Per-chunk EOS
+            // tails are NOT final; the stream continues with the next
+            // chunk's prompt + AR loop. `StreamingPlayer` uses isFinal
+            // to schedule its drain callback (once per `play(stream:)`),
+            // so emitting it per-chunk would fire that callback multiple
+            // times — and SingleVoiceViewModel breaks its for-await on
+            // isFinal=true. Both wrong before the gate. See plan file.
+            // Record EOS BEFORE the yield so the EOS-detection frame
+            // itself is part of the tail-fade region (rather than
+            // emitting it at full amplitude and only fading the
+            // strictly post-EOS frames). `smoothedIsEos` here is the
+            // moment the consecutive-above-threshold counter reached
+            // `K.eosConsecutiveFrames` — i.e. the frame we commit to
+            // an EOS decision. Earlier above-threshold frames (steps
+            // 32, 33 in the canonical trace) keep playing at full
+            // amplitude; the fade starts at this committed-fire step
+            // so `framesAfterEOS` counts forward from a stable point.
+            if smoothedIsEos && eosStep == nil { eosStep = step }
 
-            if isEos && eosStep == nil { eosStep = step }
-            if let e = eosStep, step >= e + options.framesAfterEOS { break }
+            let isAtFinalChunkFrame = eosStep.map { step >= $0 + chunkOptions.framesAfterEOS } ?? false
+            let final = isLastChunk && isAtFinalChunkFrame
+
+            // P-EOS-1: tail-fade mitigation for the CaLM eos_logit
+            // perturbation under Core ML fp16 state. Per the conversion
+            // project's EOS-margin investigation (FP16_AR_DRIFT.md item
+            // #4 follow-up), the Core ML model fires EOS ~3 frames
+            // earlier than the fp32 reference and the perturbation
+            // isn't biased one direction — early-firing leaves
+            // cut-off articulation, late-firing leaves post-EOS noise.
+            // A linear 1.0 → 0.0 ramp across the entire tail region
+            // (EOS frame + framesAfterEOS trailing frames) smooths
+            // the cutoff in either direction without changing how
+            // many frames we emit (still matches upstream Python).
+            let totalTailFrames = chunkOptions.framesAfterEOS + 1
+            let pcmToYield: [Float]
+            if let e = eosStep {
+                pcmToYield = Self.applyTailFade(
+                    pcm,
+                    framesIntoTail: step - e,
+                    totalTailFrames: totalTailFrames
+                )
+            } else {
+                pcmToYield = pcm
+            }
+            yield(PCMFrame(samples: pcmToYield, isFinal: final))
+
+            if let e = eosStep, step >= e + chunkOptions.framesAfterEOS { break }
             prevLatent = nextLatent
         }
 
@@ -286,43 +676,30 @@ actor TTSEngine: TTSEngineProtocol {
 
     // MARK: - Text splitting
 
-    /// Split `text` into chunks that each fit within the 128-token limit.
-    /// Short text returns as a single-element array (fast path).
-    private func splitForTokenLimit(_ text: String) -> [String] {
-        if fitsInTokenLimit(text) { return [text] }
-
-        let sentences = Self.splitIntoSentences(text)
-
-        // Greedily pack consecutive sentences into the largest chunks that fit.
-        var chunks: [String] = []
-        var current = ""
-        for sentence in sentences {
-            let candidate = current.isEmpty ? sentence : current + " " + sentence
-            if fitsInTokenLimit(candidate) {
-                current = candidate
-            } else {
-                if !current.isEmpty { chunks.append(current) }
-                current = sentence
-            }
+    /// Split `text` into chunks suitable for separate AR generations.
+    /// `budget` is the per-chunk SentencePiece-token target (caller-supplied,
+    /// driven by the app-level setting). Uses the SentencePiece-aware
+    /// chunker for `SentencePieceTokenizer`; falls back to a single chunk
+    /// for the test-only `FixedPhraseTokenizer` (its phrase is already
+    /// small enough to fit).
+    ///
+    /// Two-pass design. The sentence-aware chunker packs to `budget` and
+    /// can return individual chunks larger than that when a single
+    /// sentence exceeds it — including the pathological case of an LLM
+    /// emitting a run-on with no internal `.`/`!`/`?`. The second pass
+    /// flat-maps any chunk that's still over the model's hard
+    /// `K.tTextMax` limit through `subdivideIfNeeded`, which falls back
+    /// to comma/semicolon/colon boundaries, then word boundaries, then a
+    /// hard token-index cut. Leave a small headroom (`-8`) below
+    /// `K.tTextMax` so the per-chunk `TextPreprocessor.prepareTextPrompt`
+    /// has room to pad short chunks with 8 leading spaces if it wants to.
+    private func splitForTokenLimit(_ text: String, budget: Int) -> [String] {
+        guard let sp = tokenizer as? SentencePieceTokenizer else { return [text] }
+        let sentenceChunks = sp.splitIntoBestSentences(text, maxTokensPerChunk: budget)
+        let withFit = sentenceChunks.flatMap {
+            sp.subdivideIfNeeded($0, maxTokens: K.tTextMax - 8)
         }
-        if !current.isEmpty { chunks.append(current) }
-        return chunks.isEmpty ? [text] : chunks
-    }
-
-    private func fitsInTokenLimit(_ text: String) -> Bool {
-        (try? tokenizer.encode(text, paddedLength: K.tTextMax)) != nil
-    }
-
-    private nonisolated static func splitIntoSentences(_ text: String) -> [String] {
-        let tok = NLTokenizer(unit: .sentence)
-        tok.string = text
-        var result: [String] = []
-        tok.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
-            let s = String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !s.isEmpty { result.append(s) }
-            return true
-        }
-        return result.isEmpty ? [text] : result
+        return withFit.isEmpty ? [text] : withFit
     }
 
     // MARK: - State seeding
@@ -410,7 +787,7 @@ actor TTSEngine: TTSEngineProtocol {
         return Int(tPromptArr.dataPointer.assumingMemoryBound(to: Int32.self).pointee)
     }
 
-    private func runCaLMStep(state: MLState, prevLatent: [Float], offset: Int32, noise: [Float]) throws -> (latent: [Float], isEos: Bool) {
+    private func runCaLMStep(state: MLState, prevLatent: [Float], offset: Int32, noise: [Float]) throws -> (latent: [Float], eosLogit: Float) {
         let prevArr = try MLMultiArray(shape: [1, 1, K.ldim as NSNumber], dataType: .float32)
         prevLatent.withUnsafeBufferPointer { src in
             prevArr.dataPointer.assumingMemoryBound(to: Float.self)
@@ -433,20 +810,25 @@ actor TTSEngine: TTSEngineProtocol {
             from: try MLDictionaryFeatureProvider(dictionary: inputs),
             using: state
         )
+        // P-EOS-2: the rebuilt CaLM exposes `eos_logit` (raw fp32 from
+        // `flow_lm.out_eos(last_x)`, pre-threshold) so the Swift AR
+        // loop can apply its own smoothing/hysteresis instead of
+        // trusting the model's single-frame -4.0 threshold (which
+        // fires ~3 frames early under fp16 K/V state perturbation).
+        // `is_eos` is still emitted by the model but redundant once
+        // we read the raw logit.
         guard let nextLatentArr = out.featureValue(for: "next_latent")?.multiArrayValue,
-              let isEosArr = out.featureValue(for: "is_eos")?.multiArrayValue
+              let eosLogitArr = out.featureValue(for: "eos_logit")?.multiArrayValue
         else {
-            throw TTSEngineError.missingOutput("next_latent / is_eos")
+            throw TTSEngineError.missingOutput("next_latent / eos_logit")
         }
 
         let nextLatent: [Float] = {
             let p = nextLatentArr.dataPointer.assumingMemoryBound(to: Float.self)
             return Array(UnsafeBufferPointer(start: p, count: nextLatentArr.count))
         }()
-        // is_eos is fp32 in the harness's working pipeline (the converter's bool
-        // request ends up exposed as float to MLMultiArray). Match the harness.
-        let isEosVal = isEosArr.dataPointer.assumingMemoryBound(to: Float.self).pointee
-        return (nextLatent, isEosVal > 0.5)
+        let eosLogit = eosLogitArr.dataPointer.assumingMemoryBound(to: Float.self).pointee
+        return (nextLatent, eosLogit)
     }
 
     private func runMimiStep(state: MLState, latent: [Float], offset: Int32) throws -> [Float] {
@@ -478,7 +860,9 @@ actor TTSEngine: TTSEngineProtocol {
     /// Truncated normal sampler. Matches the reference FlowLM behavior
     /// (`torch.nn.init.trunc_normal_(mean=0, std=std, a=-clamp, b=clamp)`).
     /// Box-Muller for the underlying normal; rejection for the truncation.
-    private func sampleTruncNormal(count: Int, std: Float, clamp: Float) -> [Float] {
+    /// When `clamp` is nil, no truncation is applied (matches Python's
+    /// `DEFAULT_NOISE_CLAMP = None`).
+    private func sampleTruncNormal(count: Int, std: Float, clamp: Float?) -> [Float] {
         var out = [Float](); out.reserveCapacity(count)
         var generator = SystemRandomNumberGenerator()
         while out.count < count {
@@ -491,7 +875,12 @@ actor TTSEngine: TTSEngineProtocol {
             let z1 = r * sin(theta)
             for z in [z0, z1] {
                 let x = z * std
-                if x >= -clamp && x <= clamp {
+                if let c = clamp {
+                    if x >= -c && x <= c {
+                        out.append(x)
+                        if out.count == count { break }
+                    }
+                } else {
                     out.append(x)
                     if out.count == count { break }
                 }

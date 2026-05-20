@@ -85,9 +85,16 @@ actor FishEngine: TTSEngineProtocol {
 
     nonisolated func synthesize(text: String, voiceID: String, options: SynthesisOptions) -> AsyncStream<PCMFrame> {
         AsyncStream { continuation in
+            // See SynthesisCancellation.swift for the why. MLX `generate`
+            // can't be interrupted mid-call, so cancellation here only
+            // bites between chunks (Multi-Talk) and during the yield
+            // loop after generation completes. Mid-generation cancel
+            // still finishes the current chunk's audio.
+            let cancel = CancellationFlag()
+            continuation.onTermination = { _ in cancel.cancel() }
             Task {
                 do {
-                    try await self.runSynthesis(text: text, voiceID: voiceID, options: options, continuation: continuation)
+                    try await self.runSynthesis(text: text, voiceID: voiceID, options: options, continuation: continuation, cancel: cancel)
                 } catch {
                     FileHandle.standardError.write(Data("fish synthesize failed: \(error)\n".utf8))
                 }
@@ -102,10 +109,17 @@ actor FishEngine: TTSEngineProtocol {
         text: String,
         voiceID: String,
         options: SynthesisOptions,
-        continuation: AsyncStream<PCMFrame>.Continuation
+        continuation: AsyncStream<PCMFrame>.Continuation,
+        cancel: CancellationFlag
     ) async throws {
         guard status == .ready else { throw FishError.notBootstrapped }
         guard let model else { throw FishError.notBootstrapped }
+        // Early cancellation check — if the consumer dropped the stream
+        // before we even started, skip the entire chunk.
+        if cancel.isCancelled {
+            print("[FishEngine] cancelled before start")
+            return
+        }
 
         let wallStart = CFAbsoluteTimeGetCurrent()
         print("[FishEngine] ── synthesis start ──")
@@ -167,6 +181,10 @@ actor FishEngine: TTSEngineProtocol {
         let frameSize = 1920
         var offset = 0
         while offset < resampled.count {
+            if cancel.isCancelled {
+                print("[FishEngine] yield loop cancelled at \(offset)/\(resampled.count) samples")
+                break
+            }
             let end = min(offset + frameSize, resampled.count)
             let chunk = Array(resampled[offset..<end])
             let isFinal = end >= resampled.count

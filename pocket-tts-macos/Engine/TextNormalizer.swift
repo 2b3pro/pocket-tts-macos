@@ -8,17 +8,120 @@
 
 import Foundation
 
+// MARK: - PauseSegment
+// Output of `TextNormalizer.parsePauseMarkers(_:)`. Alternating list of
+// text and pause-duration segments. The TTS engine iterates these so
+// `.text` goes through the usual chunker + AR loop while `.pause`
+// becomes a stretch of silence frames with 80 ms boundary fades on the
+// neighboring audio.
+
+nonisolated enum PauseSegment: Equatable, Sendable {
+    case text(String)
+    case pause(seconds: Double)
+
+    var isPause: Bool {
+        if case .pause = self { return true }
+        return false
+    }
+}
+
 // MARK: - TextNormalizer
 
 nonisolated enum TextNormalizer {
 
+    // MARK: - Pause-marker parsing
+    //
+    // Port of Python `parse_pause_markers` (`text_normalizer.py:962-1000`).
+    // Splits `[Xs]` markers (e.g. `[1.5s]`, `[2S]`) out of the input,
+    // returning alternating text and pause segments. Must be called
+    // BEFORE `normalize(_:)` so the digits inside markers aren't
+    // expanded to words by the number rule.
+    //
+    // Behavior matches Python's:
+    //   * Duration clamped to [0, MAX_PAUSE_SECONDS].
+    //   * Zero-duration pauses dropped.
+    //   * Empty / whitespace-only text segments dropped.
+    //   * Returns `[.text(text)]` for input with no markers.
+    //   * Regex is case-insensitive (`[1.5s]` and `[1.5S]` both match).
+
+    /// Upper bound on a single pause's duration in seconds. Matches
+    /// Python's `MAX_PAUSE_SECONDS = 10.0` at `text_normalizer.py:959`.
+    static let maxPauseSeconds: Double = 10.0
+
+    private static let pauseMarkerRegex: NSRegularExpression = {
+        // Port of Python's `_PAUSE_MARKER_RE = re.compile(r"\[(\d+(?:\.\d+)?)s\]", re.IGNORECASE)`.
+        return try! NSRegularExpression(
+            pattern: #"\[(\d+(?:\.\d+)?)s\]"#,
+            options: .caseInsensitive
+        )
+    }()
+
+    static func parsePauseMarkers(_ text: String) -> [PauseSegment] {
+        let ns = text as NSString
+        let fullRange = NSRange(location: 0, length: ns.length)
+        let matches = pauseMarkerRegex.matches(in: text, range: fullRange)
+        if matches.isEmpty {
+            return [.text(text)]
+        }
+
+        var segments: [PauseSegment] = []
+        var lastEnd = 0
+        for m in matches {
+            // Text before this marker — drop if whitespace-only.
+            let beforeRange = NSRange(location: lastEnd, length: m.range.location - lastEnd)
+            if beforeRange.length > 0 {
+                let before = ns.substring(with: beforeRange)
+                if !before.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    segments.append(.text(before))
+                }
+            }
+
+            // Duration: clamp to [0, max]; drop zero.
+            let numberRange = m.range(at: 1)
+            let numberStr = ns.substring(with: numberRange)
+            if let raw = Double(numberStr) {
+                let clamped = min(raw, maxPauseSeconds)
+                if clamped > 0 {
+                    segments.append(.pause(seconds: clamped))
+                }
+            }
+
+            lastEnd = m.range.location + m.range.length
+        }
+
+        // Tail after the last marker.
+        if lastEnd < ns.length {
+            let tail = ns.substring(from: lastEnd)
+            if !tail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                segments.append(.text(tail))
+            }
+        }
+
+        return segments.isEmpty ? [.text(text)] : segments
+    }
+
     // MARK: - Public API
 
     static func normalize(_ text: String) -> String {
-        var t = text
-        // Ellipsis → comma (gives a natural pause without confusing the model)
-        t = t.replacingOccurrences(of: "…", with: ",")
-        t = t.replacingOccurrences(of: "...", with: ",")
+        // Smart-punctuation normalization runs FIRST, before anything else
+        // touches the string. The SentencePiece tokenizer maps ASCII
+        // apostrophes / quotes / hyphens / ellipsis to single canonical
+        // pieces; the Unicode "smart" equivalents byte-fallback into 3-4
+        // separate tokens (e.g. curly `’` → `<0xE2><0x80><0x99>`), which
+        // the model wasn't trained on and reliably distorts on. This is
+        // the most common source of "every contraction sounds garbled"
+        // reports because macOS smart-quote substitution + LLM-generated
+        // scripts (AI Writer) emit curly punctuation by default. Cheap
+        // fix here, audible improvement everywhere downstream.
+        var t = normalizeSmartPunctuation(text)
+        // Ellipsis: now handled above (curly … → "...") and otherwise
+        // passed through. The Python reference uses `...` as an
+        // end-of-sentence token inside its SentencePiece-based chunker
+        // and the model handles it correctly. Earlier versions
+        // substituted `...` → `,` (broke chunking) or `. ` (broke token
+        // semantics) to work around audio distortion; that distortion is
+        // now believed to be a CoreML/sampler/token-feeding bug rather
+        // than something text normalization can fix, so we stop masking it.
         // Pronunciation overrides the model struggles with
         t = applyPronunciationFixes(t)
         t = replace(t, abbrevPattern) { m, s in expandAbbreviation(m, in: s) }
@@ -265,6 +368,181 @@ nonisolated enum TextNormalizer {
     private static func expandSymbol(_ m: NSTextCheckingResult, in s: String) -> String {
         guard let sym = group(m, 1, in: s) else { return group(m, 0, in: s) ?? "" }
         return symbols[sym] ?? sym
+    }
+
+    // MARK: - Smart-punctuation normalization
+
+    /// Substitution table for Unicode characters that byte-fallback in the
+    /// Kyutai SentencePiece vocab (3-4 `<0xXX>` tokens per character) into
+    /// the closest ASCII equivalent or spoken word that does NOT
+    /// byte-fallback. The model wasn't trained on byte-fallback sequences
+    /// and reliably distorts on them; curly apostrophes in contractions
+    /// were the canonical user-reported case.
+    ///
+    /// Categories:
+    ///  * **Quotes / apostrophes / ellipsis** → ASCII (`'`, `"`, `...`).
+    ///  * **Whitespace variants** → regular space.
+    ///  * **Invisible / control characters** → stripped or space (these
+    ///    leak in from copy-paste of word-processed text, PDF copy, etc.
+    ///    and are silent killers because the user can't see them).
+    ///  * **Dash variants that byte-fallback** → ASCII `-`. (En `–`/em `—`
+    ///    dashes are intentionally NOT here — both have their own BPE
+    ///    pieces in vocab and tokenize cleanly.)
+    ///  * **Bullets / arrows** → stripped. The model can't pronounce them
+    ///    meaningfully; LLM-generated lists commonly include them.
+    ///  * **Typographic symbols** with obvious words (`©`, `®`, `™`, `§`,
+    ///    `±`, `×`, `÷`, `≈`, etc.) → that word with surrounding spaces.
+    ///  * **Vulgar fractions** (`½`, `¼`, `¾`, `⅓`, …) → spoken form,
+    ///    matching `NumberToWords.ordinal`-based fraction expansion.
+    ///  * **Common superscripts** `²` `³` → " squared" / " cubed".
+    ///
+    /// Standalone `°` is intentionally skipped — `°C` / `°F` is handled
+    /// upstream by the unit table; replacing `°` here would break that
+    /// match. Rare-enough edge case to defer.
+    private static let smartPunctSubstitutions: [(Unicode.Scalar, String)] = [
+        // Curly single quotes → ASCII apostrophe. ASCII `'` is in vocab
+        // (token 264) and the model handles contractions correctly with
+        // it, so we preserve the apostrophe content.
+        ("\u{2018}", "'"),    // ‘ left single
+        ("\u{2019}", "'"),    // ’ right single / curly apostrophe
+        ("\u{201A}", "'"),    // ‚ single low-9
+        ("\u{201B}", "'"),    // ‛ single high-reversed-9
+        ("\u{2032}", "'"),    // ′ prime
+
+        // ALL double quote forms → stripped to empty. The ASCII `"`
+        // (U+0022) is in the SP vocab as a single piece (token 3877),
+        // but the model produces audibly distorted output around it
+        // for quoted phrases mid-sentence (user-reported on `"space
+        // station romance"`). Python's reference passes quotes through
+        // verbatim and presumably has the same artifact; we strip on
+        // the Swift side because the audio quality regression matters
+        // more than preserving the quote glyph in token form. Spaces
+        // around the stripped quote get coalesced by the trailing
+        // `"  +" → " "` regex collapse at the end of `normalize(_:)`.
+        //
+        // Curly forms must map DIRECTLY to empty, not to ASCII `"`,
+        // because the substitution loop is single-pass over input
+        // scalars — replaced output isn't re-scanned, so a chained
+        // "curly → ASCII → empty" wouldn't fire the second hop.
+        ("\u{0022}", ""),     // " ASCII double quote
+        ("\u{201C}", ""),     // “ left double
+        ("\u{201D}", ""),     // ” right double
+        ("\u{201E}", ""),     // „ double low-9
+        ("\u{201F}", ""),     // ‟ double high-reversed-9
+        ("\u{2033}", ""),     // ″ double prime
+
+        // Ellipsis (single char → three ASCII dots, which is the canonical
+        // EOS-class `...` piece in vocab — token 799).
+        ("\u{2026}", "..."),  // …
+
+        // Whitespace variants
+        ("\u{00A0}", " "),    // NBSP
+        ("\u{2009}", " "),    // thin space
+        ("\u{202F}", " "),    // narrow no-break space
+        ("\u{2028}", " "),    // line separator
+        ("\u{2029}", " "),    // paragraph separator
+
+        // Invisible / control — strip
+        ("\u{00AD}", ""),     // soft hyphen
+        ("\u{200B}", ""),     // zero-width space
+        ("\u{200C}", ""),     // zero-width non-joiner
+        ("\u{200D}", ""),     // zero-width joiner
+        ("\u{FEFF}", ""),     // BOM / zero-width no-break
+
+        // Dash variants that byte-fallback (en `–`/em `—` left alone)
+        ("\u{2011}", "-"),    // ‑ non-breaking hyphen
+        ("\u{2012}", "-"),    // ‒ figure dash
+        ("\u{2015}", "-"),    // ― horizontal bar
+        ("\u{2212}", "-"),    // − math minus
+
+        // Bullets — strip (LLMs use these as list markers)
+        ("\u{2022}", ""),     // • bullet
+        ("\u{2023}", ""),     // ‣ triangular bullet
+        ("\u{2043}", ""),     // ⁃ hyphen bullet
+        ("\u{25E6}", ""),     // ◦ white bullet
+        ("\u{25AA}", ""),     // ▪ black small square
+        ("\u{25AB}", ""),     // ▫ white small square
+
+        // Arrows — strip (LLMs use them to mean "becomes" / "to";
+        // spoken-out versions would be weirder than dropping them)
+        ("\u{2190}", ""),     // ← left arrow
+        ("\u{2191}", ""),     // ↑ up arrow
+        ("\u{2192}", ""),     // → right arrow
+        ("\u{2193}", ""),     // ↓ down arrow
+        ("\u{21D0}", ""),     // ⇐ left double arrow
+        ("\u{21D2}", ""),     // ⇒ right double arrow
+
+        // Visual marker symbols — strip (no good spoken form)
+        ("\u{2713}", ""),     // ✓ check mark
+        ("\u{2717}", ""),     // ✗ ballot X
+        ("\u{2605}", ""),     // ★ black star
+        ("\u{2606}", ""),     // ☆ white star
+
+        // Typographic symbols → spoken form. Surrounding spaces keep
+        // them from running into adjacent words; the normalizer's
+        // trailing `"  +"` → " " regex collapses any doubled spaces.
+        ("\u{00A9}", " copyright "),     // ©
+        ("\u{00AE}", " registered "),    // ®
+        ("\u{2122}", " trademark "),     // ™
+        ("\u{00A7}", " section "),       // §
+        ("\u{00B6}", " paragraph "),     // ¶ pilcrow
+        ("\u{00B1}", " plus or minus "), // ±
+        ("\u{00D7}", " times "),         // × multiplication sign
+        ("\u{00F7}", " divided by "),    // ÷ division sign
+        ("\u{2248}", " approximately equal "), // ≈
+        ("\u{2260}", " not equal "),     // ≠
+        ("\u{2264}", " less than or equal "),     // ≤
+        ("\u{2265}", " greater than or equal "),  // ≥
+
+        // Vulgar fractions → spoken form (matches `fractionNames` keys).
+        ("\u{00BC}", "one quarter"),     // ¼
+        ("\u{00BD}", "one half"),        // ½
+        ("\u{00BE}", "three quarters"),  // ¾
+        ("\u{2153}", "one third"),       // ⅓
+        ("\u{2154}", "two thirds"),      // ⅔
+        ("\u{2155}", "one fifth"),       // ⅕
+        ("\u{2156}", "two fifths"),      // ⅖
+        ("\u{2157}", "three fifths"),    // ⅗
+        ("\u{2158}", "four fifths"),     // ⅘
+        ("\u{2159}", "one sixth"),       // ⅙
+        ("\u{215A}", "five sixths"),     // ⅚
+        ("\u{215B}", "one eighth"),      // ⅛
+        ("\u{215C}", "three eighths"),   // ⅜
+        ("\u{215D}", "five eighths"),    // ⅝
+        ("\u{215E}", "seven eighths"),   // ⅞
+
+        // Superscripts as exponents
+        ("\u{00B2}", " squared"),        // ²
+        ("\u{00B3}", " cubed"),          // ³
+    ]
+
+    private static func normalizeSmartPunctuation(_ text: String) -> String {
+        // Operate on Unicode scalars, not Characters. Swift's `Character`
+        // is an extended grapheme cluster, and combining-class scalars
+        // (notably the zero-width joiner U+200D and combining accents)
+        // glue themselves to the preceding scalar. A Character-keyed
+        // lookup table would never see those as standalone Characters,
+        // so the silent stripping would silently fail. Scalar-level
+        // iteration handles every case uniformly.
+        let triggers = Set(smartPunctSubstitutions.map(\.0))
+        var needsReplace = false
+        for scalar in text.unicodeScalars where triggers.contains(scalar) {
+            needsReplace = true
+            break
+        }
+        if !needsReplace { return text }
+
+        let table = Dictionary(uniqueKeysWithValues: smartPunctSubstitutions)
+        var out = ""
+        out.reserveCapacity(text.count)
+        for scalar in text.unicodeScalars {
+            if let replacement = table[scalar] {
+                out.append(replacement)
+            } else {
+                out.unicodeScalars.append(scalar)
+            }
+        }
+        return out
     }
 
     // MARK: - Pronunciation fixes

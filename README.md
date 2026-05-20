@@ -14,10 +14,12 @@ The Python TTS model was converted to three Core ML `.mlpackage` artifacts via a
 
 | Model | Size | Role |
 |-------|-----:|------|
-| `prompt_phase.mlpackage` | 140 MB fp16 | Encodes text tokens + voice into KV cache |
-| `calm_stateful.mlpackage` | 162 MB fp16 | Autoregressive decoder — one latent frame per 80ms step |
-| `mimi_stateful.mlpackage` | 20 MB fp16 | Streaming neural codec — converts latents to 1920 PCM samples |
+| `prompt_phase.mlpackage` | 134 MB fp16 | Encodes text tokens + voice into KV cache |
+| `calm_stateful.mlpackage` | 325 MB fp32 compute | Autoregressive decoder — one latent frame per 80ms step |
+| `mimi_stateful.mlpackage` | 39 MB fp32 compute | Streaming neural codec — converts latents to 1920 PCM samples |
 | `voice_prompt_phase.mlpackage` | 265 MB fp32 | Bakes voice conditioning into KV cache for imported voices |
+
+CaLM and Mimi are converted with `compute_precision=FLOAT32` (state buffers remain fp16 — coremltools 9.0 doesn't yet support fp32 state). The fp32 compute path eliminates two issues the original fp16 builds had on long generations: per-step AR drift that compounded across 30+ frame chunks, and a Mimi K/V buffer overflow (cache sized for 64 frames, real chunks ran 100+) that produced silent stale-attention reads in the back half of long sentences. After the rebuild, drift is flat past 100 steps and 1.4e-4 vs the fp32 PyTorch reference on the back third of a 106-frame sentence.
 
 Seven predefined voices ship as precomputed KV states. Custom voices are imported via the Voice Manager and baked in-app using a native MLX port of the Mimi encoder (18M params).
 
@@ -67,6 +69,7 @@ WAV → [LavaSR enhancement (optional)] → [Fish DAC encode] + [MimiEncoder →
 
 - **LavaSR Enhancement** — MLX-native port of the Vocos BWE (bandwidth extension) model. Uses a custom ISTFT head matching the Python Vocos pipeline exactly: periodic Hann window, window-squared overlap-add normalization, and "same" padding. Best suited for noisy or low-quality recordings — clean studio audio may sound worse after enhancement due to inherent model artifacts.
 - **RMS Normalization** — All imported voices are automatically RMS-normalized to -16 dB at import time, ensuring consistent volume for encoding regardless of whether enhancement is applied.
+- **Per-voice loudness target** — Each saved voice carries its own RMS target (-30 to -6 dB) configured in the Enhancement Studio. Single Voice applies the target automatically as a streaming-friendly static gain relative to the -16 dB conditioning baseline. Multi-Talk adds a 3-way segmented picker (Per voice / Match loudest / Match quietest) mirroring the Electron reference, so multi-speaker dialogues can be balanced without re-baking voice KV states.
 - **Enhancement Studio** — A/B comparison (Play original vs enhanced), Accept & Save / Reject / Re-enhance flow. Denoise toggle and RMS target level (-30 to -6 dB) configurable per voice.
 - **Mono preconditioning** — Stereo or non-44.1kHz WAVs are automatically converted to mono 44.1kHz at import time for consistent downstream processing.
 - **Memory management** — All import models (MimiEncoder, LavaSR, voice_prompt_phase) unload after encoding. Fish engine unloads when switching to Pocket-TTS. MLX GPU cache cleared on unload.
@@ -93,13 +96,17 @@ Both Single Voice and Multi-Talk views have an "AI Write" button that opens an L
 - macOS 15+ (Core ML stateful models require it)
 - Xcode 16+ (Swift 6)
 - Apple Silicon (required for MLX / Fish backend; Pocket-TTS works on Intel but not optimized)
-- ~410 MB for Pocket-TTS models + ~56 MB LavaSR weights + ~73 MB MimiEncoder weights
+- ~500 MB for Pocket-TTS models (fp32-compute CaLM + Mimi) + ~56 MB LavaSR weights + ~73 MB MimiEncoder weights
 - Fish S2 Pro weights (~3.5 GB) downloaded on first selection from HuggingFace
 - [LM Studio](https://lmstudio.ai/) for Chat tab and AI Script Writer (optional)
 
 ## Building
 
 ```bash
+# 1. Sync models + tokenizer + voice KV states into Resources/
+./scripts/sync-assets.sh
+
+# 2. Build (Debug)
 xcodebuild -project pocket-tts-macos.xcodeproj \
     -scheme pocket-tts-macos \
     -destination 'platform=macOS' \
@@ -111,13 +118,26 @@ xcodebuild -project pocket-tts-macos.xcodeproj \
     -destination 'platform=macOS' test
 ```
 
+### Release archives
+
+Before archiving for public distribution, run the strip script to ensure only the seven Kyutai stock voices end up bundled:
+
+```bash
+./scripts/strip-custom-voices.sh
+xcodebuild archive ...
+# sign + notarize
+./scripts/sync-assets.sh   # restore dev state
+```
+
+The strip script is idempotent. After archive, verify by listing `.app/Contents/Resources/*.safetensors` — should show only the seven stock voice names (`alba`, `azelma`, `cosette`, `fantine`, `javert`, `jean`, `marius`) alongside the `lavasr_*` and `mimi_encoder_*` model weights.
+
 ## Remaining Work
 
 | Item | Status |
 |------|--------|
 | LavaSR audio quality tuning | In progress — slight artifacts in enhanced output |
 | ULUNAS denoiser port | Planned — currently BWE only |
-| Phase 6: signing, notarization, Sparkle, DMG | Planned |
+| Sparkle auto-update + DMG | Planned (signing + notarization done) |
 | iOS variant | Deferred to v2 |
 
 ## Related Projects

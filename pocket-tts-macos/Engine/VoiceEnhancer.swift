@@ -87,30 +87,15 @@ final class VoiceEnhancer {
     // MARK: - Audio I/O
 
     private static func loadAudio(url: URL, targetRate: Int) throws -> [Float] {
-        let audioFile = try AVAudioFile(forReading: url)
-        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(targetRate), channels: 1, interleaved: false)!
-        let frameCount = AVAudioFrameCount(audioFile.length)
-        let maxFrames = AVAudioFrameCount(30 * targetRate)
-        let readFrames = min(frameCount, maxFrames)
-
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: readFrames) else {
+        do {
+            return try AudioPreconditioner.loadMonoFloat32(
+                url: url,
+                targetRate: targetRate,
+                maxSeconds: 30
+            )
+        } catch {
             throw EnhancerError.audioReadFailed
         }
-
-        if Int(audioFile.processingFormat.sampleRate) == targetRate && audioFile.processingFormat.channelCount == 1 {
-            try audioFile.read(into: buffer, frameCount: readFrames)
-        } else {
-            let srcBuffer = AVAudioPCMBuffer(pcmFormat: audioFile.processingFormat, frameCapacity: readFrames)!
-            try audioFile.read(into: srcBuffer, frameCount: readFrames)
-            let converter = AVAudioConverter(from: audioFile.processingFormat, to: format)!
-            _ = converter.convert(to: buffer, error: nil) { _, outStatus in
-                outStatus.pointee = .haveData
-                return srcBuffer
-            }
-        }
-
-        guard let data = buffer.floatChannelData?[0] else { throw EnhancerError.audioReadFailed }
-        return Array(UnsafeBufferPointer(start: data, count: Int(buffer.frameLength)))
     }
 
     private static func writeWAV(samples: [Float], sampleRate: Int, url: URL) throws {
@@ -266,7 +251,7 @@ private class LavaSRISTFTHead: Module {
 /// Uses mel spectrogram → ConvNeXt backbone → custom ISTFT head.
 private class LavaSREnhancer: Module {
     nonisolated(unsafe) let backbone: VocosBackbone
-    nonisolated(unsafe) let head: LavaSRISTFTHead
+    let head: LavaSRISTFTHead
 
     // From LavaSR enhancer_v2/config.yaml
     nonisolated static let nFft = 2048
@@ -363,8 +348,8 @@ private class LavaSREnhancer: Module {
         // Python: center=False, manual pad of (win_length - hop_length) // 2
         let padAmount = (nFft - hopLength) / 2
         let n = audio.shape[0]
-        let leading = audio[from: padAmount, to: 0, stride: -1, axis: 0]
-        let trailing = audio[from: n - 2, to: n - 2 - padAmount, stride: -1, axis: 0]
+        let leading = audio[.stride(from: padAmount, to: 0, by: -1)]
+        let trailing = audio[.stride(from: n - 2, to: n - 2 - padAmount, by: -1)]
         let padded = MLX.concatenated([leading, audio, trailing], axis: 0)
 
         // Frame into overlapping windows

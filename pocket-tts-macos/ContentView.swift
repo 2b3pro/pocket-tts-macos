@@ -42,8 +42,29 @@ struct ContentView: View {
             minHeight: Theme.windowMinHeight,
             idealHeight: Theme.windowDefaultHeight
         )
+        .onAppear {
+            // Hand the SwiftData context to AppState first — downstream
+            // consumers (ChatViewModel, ScriptGenerator) read endpoint
+            // baseURL via `appState.currentEndpointBaseURL`, which needs
+            // the context to fetch the row.
+            appState.modelContext = modelContext
+            // First-launch migration of LLM endpoint + system prompts
+            // off UserDefaults into SwiftData. Idempotent — `loadOrSeed*`
+            // is a no-op once rows exist.
+            migrateChatSettingsIntoSwiftDataIfNeeded()
+        }
         .onChange(of: appState.engineStatus) { _, newStatus in
             if case .ready = newStatus { spinUpViewModels() }
+        }
+        .onChange(of: appState.chatSettings.fishParams) { _, _ in
+            // Fish sliders (Temperature / Top P / Top K) live in
+            // `BackendSelector` and mutate `fishParams` directly via
+            // @Binding; none of the existing save triggers (sheet
+            // dismissal, backend toggle) fire while the user drags,
+            // so without this the values reset to defaults on relaunch.
+            // `FishGenParams` is Equatable, so .onChange fires only
+            // when the struct actually changes.
+            SettingsStore.save(appState.chatSettings)
         }
         .onChange(of: appState.chatSettings.activeBackend) { _, newBackend in
             SettingsStore.save(appState.chatSettings)
@@ -72,15 +93,34 @@ struct ContentView: View {
                 }
             }
         }
-        .sheet(isPresented: $appState.showsSettingsSheet) {
-            SettingsView(
-                isPresented: $appState.showsSettingsSheet,
+        // App-wide settings (Local LLM endpoint + Pocket-TTS Tuning). Reachable from
+        // the global header gear icon and from Cmd+,.
+        .sheet(isPresented: $appState.showsAppSettings) {
+            AppSettingsView(
+                isPresented: $appState.showsAppSettings,
+                settings: $appState.chatSettings,
+                chunkBudget: $appState.pocketTTSChunkBudget,
+                endpoint: AppDataStore.loadOrSeedEndpoint(
+                    modelContext,
+                    fallbackBaseURL: appState.chatSettings.baseURL
+                ),
+                onSave: { newSettings in
+                    SettingsStore.save(newSettings)
+                    chatVM?.settings = newSettings
+                    Task { await chatVM?.checkConnection() }
+                }
+            )
+        }
+        // Chat-scoped settings (TTS voice + chat system prompt). Reachable
+        // only from the Chat tab's own gear button.
+        .sheet(isPresented: $appState.showsChatSettings) {
+            ChatSettingsView(
+                isPresented: $appState.showsChatSettings,
                 settings: $appState.chatSettings,
                 voices: voices,
                 onSave: { newSettings in
                     SettingsStore.save(newSettings)
                     chatVM?.settings = newSettings
-                    Task { await chatVM?.checkConnection() }
                 }
             )
         }
@@ -214,13 +254,28 @@ struct ContentView: View {
                     .foregroundStyle(Theme.textSecondary)
             }
             Spacer()
-            Button(action: { appState.showsVoiceManager = true }) {
-                Image(systemName: "waveform.circle")
-                    .font(.system(size: 18))
-                    .foregroundStyle(Theme.textSecondary)
+            HStack(spacing: Theme.space3) {
+                Button(action: { appState.showsVoiceManager = true }) {
+                    Image(systemName: "waveform.circle")
+                        .font(.system(size: 18))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("Voice Manager")
+                .accessibilityIdentifier("header.voiceManagerButton")
+
+                // Global app-settings button. Reaches LLM endpoint + Pocket-TTS
+                // tuning from any tab. The Chat tab has its own (chat-only)
+                // gear button inside its header.
+                Button(action: { appState.showsAppSettings = true }) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 16))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("App Settings")
+                .accessibilityIdentifier("header.appSettingsButton")
             }
-            .buttonStyle(.plain)
-            .help("Voice Manager")
             .padding(.trailing, Theme.space4)
         }
         .frame(maxWidth: .infinity)
@@ -286,7 +341,7 @@ struct ContentView: View {
                 ChatView(
                     viewModel: chatVM,
                     player: appState.player!,
-                    onOpenSettings: { appState.showsSettingsSheet = true },
+                    onOpenSettings: { appState.showsChatSettings = true },
                     onOpenInMultiTalk: { payload in appState.queueReuse(payload) }
                 )
             }
@@ -295,12 +350,49 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - First-launch migration
+
+    /// Seed `LocalLLMEndpoint` from the user's existing
+    /// `chatSettings.baseURL`, and seed one `SystemPrompt` per scope
+    /// from the matching `chatSettings.*SystemPrompt` value (falling
+    /// back to the hardcoded defaults if blank).
+    ///
+    /// Both halves are idempotent — once a row exists for the endpoint
+    /// or for a scope, subsequent calls leave existing data alone. Safe
+    /// to call on every `onAppear`.
+    private func migrateChatSettingsIntoSwiftDataIfNeeded() {
+        _ = AppDataStore.loadOrSeedEndpoint(
+            modelContext,
+            fallbackBaseURL: appState.chatSettings.baseURL
+        )
+
+        // Per-scope seed content: prefer the user's current value;
+        // fall back to the hardcoded scope default when blank so the
+        // user has something to edit instead of an empty editor.
+        let chatBody = appState.chatSettings.systemPrompt
+        let singleBody = appState.chatSettings.singleVoiceSystemPrompt.isEmpty
+            ? ChatSettings.defaultSingleVoicePrompt
+            : appState.chatSettings.singleVoiceSystemPrompt
+        let multiBody = appState.chatSettings.multiTalkSystemPrompt.isEmpty
+            ? ChatSettings.defaultMultiTalkPrompt
+            : appState.chatSettings.multiTalkSystemPrompt
+
+        AppDataStore.loadOrSeedPrompts(
+            modelContext,
+            seedContent: [
+                .chat:        chatBody,
+                .singleVoice: singleBody,
+                .multiTalk:   multiBody,
+            ]
+        )
+    }
+
     // MARK: - VM bootstrap
 
     private func spinUpViewModels() {
         guard let engine = appState.engine, let player = appState.player else { return }
-        if singleVM == nil { singleVM = SingleVoiceViewModel(engine: engine, player: player) }
-        if multiVM == nil  { multiVM  = MultiTalkViewModel(engine: engine, player: player) }
+        if singleVM == nil { singleVM = SingleVoiceViewModel(engine: engine, player: player, appState: appState) }
+        if multiVM == nil  { multiVM  = MultiTalkViewModel(engine: engine, player: player, appState: appState) }
 
         // If the persisted backend is Fish, bootstrap it and swap engines.
         if appState.chatSettings.activeBackend == .fishSpeech {
@@ -314,7 +406,7 @@ struct ContentView: View {
             }
         }
         if chatVM == nil {
-            chatVM = ChatViewModel(engine: engine, player: player, settings: appState.chatSettings)
+            chatVM = ChatViewModel(engine: engine, player: player, settings: appState.chatSettings, appState: appState)
         }
         // Voice catalog: discovered by VoiceLoader at engine init; map IDs → Voice.
         let ids = engine.availableVoiceIDs()

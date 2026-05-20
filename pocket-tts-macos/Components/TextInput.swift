@@ -69,6 +69,16 @@ struct TextInput: View {
             }
 
             // Editor
+            //
+            // Always use the NSTextView-backed `MacTextEditor`, even when
+            // there's no `editorBridge` (Single Voice doesn't need cursor-
+            // aware insertion). SwiftUI's `TextEditor` on macOS doesn't
+            // expose continuous spell-check or the smart-substitution
+            // toggles, both of which we need: spell-check so the user
+            // catches typos that would mispronounce, and the smart-sub
+            // toggles OFF so the OS doesn't quietly re-introduce curly
+            // punctuation that the byte-fallback tokenization can't
+            // handle. `MacTextEditor.makeNSView` sets all of that up.
             ZStack(alignment: .topLeading) {
                 if text.isEmpty {
                     Text(placeholder)
@@ -78,21 +88,10 @@ struct TextInput: View {
                         .padding(.vertical, Theme.space3 + 4)
                         .allowsHitTesting(false)
                 }
-                if let editorBridge {
-                    MacTextEditor(text: $text, isEditable: !disabled, bridge: editorBridge)
-                        .padding(.horizontal, Theme.space4 - 4)
-                        .padding(.vertical, Theme.space3 - 6)
-                        .accessibilityIdentifier(accessibilityID)
-                } else {
-                    TextEditor(text: $text)
-                        .font(Theme.fontSM)
-                        .foregroundStyle(Theme.textPrimary)
-                        .scrollContentBackground(.hidden)
-                        .padding(.horizontal, Theme.space4)
-                        .padding(.vertical, Theme.space3)
-                        .disabled(disabled)
-                        .accessibilityIdentifier(accessibilityID)
-                }
+                MacTextEditor(text: $text, isEditable: !disabled, bridge: editorBridge)
+                    .padding(.horizontal, Theme.space4 - 4)
+                    .padding(.vertical, Theme.space3 - 6)
+                    .accessibilityIdentifier(accessibilityID)
             }
             .frame(minHeight: Theme.textEditorMinHeight)
             .themeInputField()

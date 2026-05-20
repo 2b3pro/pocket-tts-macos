@@ -117,7 +117,7 @@ struct ChatView: View {
     private var composer: some View {
         VStack(alignment: .leading, spacing: Theme.space2) {
             if case let .disconnected(reason) = viewModel.connectionState {
-                Text("Can't reach LM Studio (\(reason)). Open Settings (⌘,) to point at the right URL or start LM Studio.")
+                Text("Can't reach the LLM endpoint (\(reason)). Open App Settings (⌘,) to point at the right URL, or start your local LLM (LM Studio, Ollama, etc.).")
                     .font(Theme.fontXS)
                     .foregroundStyle(Theme.warningFG)
             }
@@ -129,7 +129,7 @@ struct ChatView: View {
 
             HStack(spacing: Theme.space3) {
                 // Field is only disabled while synthesis is actively running.
-                // Disabling on !canSend trapped the user: when LM Studio is
+                // Disabling on !canSend trapped the user: when the LLM is
                 // .checking / .disconnected (or the draft is empty), the field
                 // would lock and the user couldn't type to make it non-empty.
                 // Send button below stays gated by canSend.

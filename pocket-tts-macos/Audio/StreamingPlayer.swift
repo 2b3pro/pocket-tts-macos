@@ -143,8 +143,22 @@ actor StreamingPlayer {
     func stop() {
         isStopped = true
         currentAmplitude.atomic.store(0, ordering: .relaxed)
-        if playerNode.isPlaying { playerNode.stop() }
-        if engine.isRunning { engine.stop() }
+
+        // Priority-inversion guard. `playerNode.stop()` / `engine.stop()`
+        // synchronously wait on AVAudioEngine's internal Default-QoS
+        // threads. The actor is frequently entered from a User-initiated
+        // context (stop button in SwiftUI), and blocking that thread on
+        // the lower-priority audio threads trips Xcode's "Hang Risk"
+        // diagnostic. Hopping the AV teardown onto a Default-QoS queue
+        // matches the worker priority and clears the inversion. The
+        // drain-side continuation is signaled below either way, so
+        // observable timing is unchanged for callers.
+        let pn = playerNode
+        let eng = engine
+        DispatchQueue.global(qos: .default).async {
+            if pn.isPlaying { pn.stop() }
+            if eng.isRunning { eng.stop() }
+        }
 
         // Surface stop to any awaiter.
         if let cont = drainContinuation {

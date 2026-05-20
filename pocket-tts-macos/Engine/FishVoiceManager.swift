@@ -24,6 +24,11 @@ struct FishVoice: Identifiable, Codable, Equatable, Sendable {
     var codesLength: Int?
     var isEnhanced: Bool = false
     var pocketTTSKVPath: String?
+    /// Per-voice RMS target in dB (P1-N1). `nil` falls back to the global
+    /// `VoiceLevel.defaultTargetDB` (-16 dB), matching pre-feature behavior
+    /// and Python's `_normalize_audio_rms` default. Decoded lazily so
+    /// existing voices.json catalogs upgrade without migration.
+    var rmsTargetDB: Float?
 }
 
 // MARK: - FishVoiceManager
@@ -79,6 +84,7 @@ final class FishVoiceManager {
         )
 
         voices.append(voice)
+        sortVoices()
         saveCatalog()
         return voice
     }
@@ -161,6 +167,14 @@ final class FishVoiceManager {
         saveCatalog()
     }
 
+    /// Persist a per-voice RMS target (dB). `nil` clears the override and
+    /// falls back to `VoiceLevel.defaultTargetDB`.
+    func setRmsTargetDB(_ db: Float?, for voiceID: String) {
+        guard let idx = voices.firstIndex(where: { $0.id == voiceID }) else { return }
+        voices[idx].rmsTargetDB = db
+        saveCatalog()
+    }
+
     // MARK: - Transcript
 
     func setTranscript(_ transcript: String, for voiceID: String) {
@@ -192,10 +206,20 @@ final class FishVoiceManager {
             decoder.dateDecodingStrategy = .iso8601
             voices = try decoder.decode([FishVoice].self, from: data)
             voices.removeAll { !FileManager.default.fileExists(atPath: $0.wavPath) }
+            sortVoices()
         } catch {
             print("[FishVoiceManager] failed to load catalog: \(error)")
         }
         print("[FishVoiceManager] loaded \(voices.count) voices")
+    }
+
+    // MARK: - Sort invariant
+    // The `voices` array is kept sorted by name (Finder-style natural sort)
+    // so that every consumer (Single Voice picker, Multi-Talk SpeakerCard,
+    // Chat Settings, Voice Manager) renders in the same predictable order
+    // without having to remember to sort at each call site.
+    private func sortVoices() {
+        voices.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     private func saveCatalog() {
@@ -214,9 +238,7 @@ final class FishVoiceManager {
 
     /// Returns true if the WAV needs conversion (stereo or wrong sample rate).
     private func needsConversion(_ url: URL) -> Bool {
-        guard let file = try? AVAudioFile(forReading: url) else { return true }
-        let fmt = file.processingFormat
-        return fmt.channelCount != 1 || Int(fmt.sampleRate) != 44100
+        AudioPreconditioner.needsConversion(url: url, targetRate: 44_100)
     }
 
     /// Normalizes WAV in-place to -16 dB RMS for consistent encoder input.
@@ -243,26 +265,10 @@ final class FishVoiceManager {
     }
 
     private func convertToWAV(source: URL, destination: URL) throws {
-        guard let inputFile = try? AVAudioFile(forReading: source) else {
-            throw NSError(domain: "FishVoiceManager", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Cannot read audio file: \(source.lastPathComponent)"
-            ])
-        }
-        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 1, interleaved: false)!
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(inputFile.length)) else {
-            throw NSError(domain: "FishVoiceManager", code: 2, userInfo: [
-                NSLocalizedDescriptionKey: "Cannot create audio buffer"
-            ])
-        }
-        let converter = AVAudioConverter(from: inputFile.processingFormat, to: format)!
-        try converter.convert(to: buffer, error: nil) { _, outStatus in
-            outStatus.pointee = .haveData
-            do {
-                try inputFile.read(into: buffer)
-            } catch {}
-            return buffer
-        }
-        let outputFile = try AVAudioFile(forWriting: destination, settings: format.settings)
-        try outputFile.write(from: buffer)
+        try AudioPreconditioner.convertToMonoWAV(
+            source: source,
+            destination: destination,
+            targetRate: 44_100
+        )
     }
 }

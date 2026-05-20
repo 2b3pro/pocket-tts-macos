@@ -9,6 +9,7 @@
 
 import Foundation
 import Observation
+import SwiftData
 
 // MARK: - Tab enum
 
@@ -56,8 +57,15 @@ final class AppState {
     var selectedTab: AppTab = .single
     var pendingReuse: PendingReuse?
 
-    /// Settings sheet visibility (toggled by Cmd+, or the gear icon).
-    var showsSettingsSheet: Bool = false
+    /// App-wide settings sheet visibility (LLM endpoint config, Pocket-TTS
+    /// tuning). Toggled by Cmd+, or the gear icon in the global header
+    /// so it's reachable from any tab.
+    var showsAppSettings: Bool = false
+
+    /// Chat-scoped settings sheet visibility (TTS voice for chat replies,
+    /// chat system prompt). Triggered by the gear icon inside the Chat
+    /// tab's own header — those settings only make sense in chat context.
+    var showsChatSettings: Bool = false
 
     /// Voice Manager sheet visibility.
     var showsVoiceManager: Bool = false
@@ -65,8 +73,52 @@ final class AppState {
     /// Toast notification shown when a voice finishes encoding.
     var toastMessage: String?
 
-    /// LM Studio chat settings. Persisted via UserDefaults; loaded once at init.
+    /// Chat + LLM-endpoint settings struct. Persisted via UserDefaults;
+    /// loaded once at init. (Despite the name, this still holds the
+    /// global LLM endpoint config until that field migrates to
+    /// SwiftData — see follow-up commit.)
     var chatSettings: ChatSettings
+
+    /// Per-chunk SentencePiece-token budget for Pocket-TTS synthesis.
+    /// Lower values produce shorter chunks with less accumulated AR
+    /// error per chunk, at the cost of more chunk-boundary resets.
+    /// Range 15–50; default 50 matches the Python reference. Auto-
+    /// persisted to UserDefaults on every change so the user's chosen
+    /// value survives launches.
+    var pocketTTSChunkBudget: Int = 50 {
+        didSet {
+            UserDefaults.standard.set(pocketTTSChunkBudget, forKey: Self.chunkBudgetKey)
+            // Console breadcrumb so the user can confirm the slider change
+            // actually flowed through. The engine also logs the live value
+            // on every text segment (`[PocketTTS] split into N chunk(s)
+            // (budget X)`); this line just makes the moment-of-change
+            // visible without having to synthesize first.
+            if pocketTTSChunkBudget != oldValue {
+                print("[Settings] pocketTTSChunkBudget: \(oldValue) → \(pocketTTSChunkBudget)")
+            }
+        }
+    }
+
+    private static let chunkBudgetKey = "com.slaughtersj.pocket-tts-macos.pocketTTSChunkBudget"
+
+    /// SwiftData context for the app-wide models (LocalLLMEndpoint,
+    /// SystemPrompt, history). Set by `ContentView.onAppear` once the
+    /// `@Environment(\.modelContext)` is in scope. View models that
+    /// need SwiftData reach into AppState rather than carrying their
+    /// own context references.
+    var modelContext: ModelContext?
+
+    /// Live read of the user's LLM endpoint base URL from SwiftData.
+    /// Idempotently seeds the singleton row if missing. Falls back to
+    /// `chatSettings.baseURL` (the pre-migration value) if the context
+    /// isn't set yet — shouldn't happen in practice after the first
+    /// onAppear, but keeps the call safe.
+    var currentEndpointBaseURL: String {
+        guard let ctx = modelContext else { return chatSettings.baseURL }
+        return AppDataStore
+            .loadOrSeedEndpoint(ctx, fallbackBaseURL: chatSettings.baseURL)
+            .baseURL
+    }
 
     /// One-shot loading state for the shared engine. UI surfaces this on first
     /// launch so the user knows something is happening during cold start.
@@ -91,6 +143,8 @@ final class AppState {
 
     init() {
         self.chatSettings = SettingsStore.load()
+        let savedBudget = UserDefaults.standard.integer(forKey: Self.chunkBudgetKey)
+        self.pocketTTSChunkBudget = (15...50).contains(savedBudget) ? savedBudget : 50
     }
 
     /// Build the Pocket-TTS engine + player once at app launch.

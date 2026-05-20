@@ -3,7 +3,7 @@
 //  pocket-tts-macos
 //
 //  Orchestrates: LLM streaming → SentenceDetector → TTS queue → StreamingPlayer.
-//  The pipeline is two cooperating Tasks: one consuming LM Studio's SSE
+//  The pipeline is two cooperating Tasks: one consuming the LLM's SSE
 //  stream and enqueueing sentences, one consuming the queue and feeding the
 //  TTS engine + player. Cancellation halts both.
 
@@ -48,10 +48,13 @@ final class ChatViewModel {
     // MARK: - Deps
     private let engine: TTSEngine
     private let player: StreamingPlayer
-    private var client: LMStudioClient
-    var settings: ChatSettings {
-        didSet { client = LMStudioClient(baseURL: URL(string: settings.baseURL) ?? Self.fallbackURL) }
-    }
+    private let appState: AppState
+    /// Pulled live from `appState.currentEndpointBaseURL` per request
+    /// (see `makeClient()`) — the baseURL lives in SwiftData now, not
+    /// in `ChatSettings`, so caching a `client` keyed on the struct's
+    /// value would go stale when the user edits the endpoint in
+    /// App Settings.
+    var settings: ChatSettings
 
     private var llmTask: Task<Void, Never>?
     private var ttsTask: Task<Void, Never>?
@@ -73,11 +76,36 @@ final class ChatViewModel {
     private static let fallbackURL = URL(string: "http://localhost:1234")!
 
     // MARK: - Init
-    init(engine: TTSEngine, player: StreamingPlayer, settings: ChatSettings) {
+    init(engine: TTSEngine, player: StreamingPlayer, settings: ChatSettings, appState: AppState) {
         self.engine = engine
         self.player = player
+        self.appState = appState
         self.settings = settings
-        self.client = LMStudioClient(baseURL: URL(string: settings.baseURL) ?? Self.fallbackURL)
+    }
+
+    /// Build a fresh `LocalLLMClient` against the current endpoint URL.
+    /// Creating an actor is cheap and avoids the stale-cache problem
+    /// from the pre-SwiftData design where `client` was rebuilt only on
+    /// `settings.didSet`.
+    private func makeClient() -> LocalLLMClient {
+        LocalLLMClient(baseURL: URL(string: appState.currentEndpointBaseURL) ?? Self.fallbackURL)
+    }
+
+    /// Resolve the currently-active chat SystemPrompt's content from
+    /// SwiftData. Falls back to the legacy `settings.systemPrompt` if
+    /// the context isn't set yet (which would only happen if `send()`
+    /// fired before `ContentView.onAppear` — defensive guard).
+    private func currentChatSystemPrompt() -> String {
+        guard let ctx = appState.modelContext else { return settings.systemPrompt }
+        return AppDataStore.activePrompt(ctx, scope: .chat)?.content ?? ""
+    }
+
+    /// Build the per-call options, pulling user-tunable values (chunk
+    /// budget) live from AppState.
+    private func currentSynthesisOptions() -> SynthesisOptions {
+        var options = SynthesisOptions()
+        options.chunkTokenBudget = appState.pocketTTSChunkBudget
+        return options
     }
 
     // MARK: - Lifecycle hooks
@@ -96,7 +124,7 @@ final class ChatViewModel {
     /// Manually trigger a single connection check (e.g. settings just changed).
     func checkConnection() async {
         do {
-            let models = try await client.listModels()
+            let models = try await makeClient().listModels()
             if let model = models.first {
                 let prefer = settings.model.isEmpty ? model : settings.model
                 connectionState = .connected(model: prefer)
@@ -124,15 +152,22 @@ final class ChatViewModel {
         // Sentence queue: LLM-side appends, TTS-side consumes.
         let (sentenceStream, sentenceCont) = AsyncStream<String>.makeStream(of: String.self)
 
+        // Snapshot the active chat prompt's content before we hop into
+        // the detached Task — the SwiftData read needs MainActor and
+        // we want the request to use whatever the active prompt was at
+        // the moment the user hit Send (subsequent edits don't apply
+        // retroactively to in-flight requests).
+        let systemPromptSnapshot = currentChatSystemPrompt()
+
         // 1) LLM streaming task — pulls tokens, runs the sentence detector,
         //    appends content to the assistant message, enqueues sentences.
         llmTask = Task { [weak self, settings] in
             guard let self else { return }
             let detector = SentenceDetector()
-            let stream = self.client.streamChat(
+            let stream = self.makeClient().streamChat(
                 messages: self.messagesForRequest(),
                 model: settings.model.isEmpty ? model : settings.model,
-                systemPrompt: settings.systemPrompt
+                systemPrompt: systemPromptSnapshot
             )
             do {
                 for try await delta in stream {
@@ -161,7 +196,7 @@ final class ChatViewModel {
                 self.status = .speaking(sentenceIndex: sentenceIndex)
 
                 let voiceID = self.settings.ttsVoiceID
-                let synthStream = self.engine.synthesize(text: sentence, voiceID: voiceID)
+                let synthStream = self.engine.synthesize(text: sentence, voiceID: voiceID, options: self.currentSynthesisOptions())
 
                 // Play this sentence and await full drain before the next.
                 do {

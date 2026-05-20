@@ -40,9 +40,9 @@ final class ScriptGenerator {
 
     // MARK: - Connection probe
 
-    func checkConnection(settings: ChatSettings) async {
+    func checkConnection(settings: ChatSettings, baseURL: String) async {
         connectionState = .checking
-        let client = LMStudioClient(baseURL: URL(string: settings.baseURL) ?? fallbackURL)
+        let client = LocalLLMClient(baseURL: URL(string: baseURL) ?? fallbackURL)
         do {
             let models = try await client.listModels()
             if let model = models.first {
@@ -58,21 +58,23 @@ final class ScriptGenerator {
 
     // MARK: - Generation
 
-    func generate(prompt: String, mode: ScriptGeneratorMode, speakerCount: Int, settings: ChatSettings) {
+    func generate(prompt: String, mode: ScriptGeneratorMode, speakerCount: Int, settings: ChatSettings, baseURL: String, systemPromptContent: String) {
         guard case .connected(let model) = connectionState else { return }
 
         status = .generating
         preview = ""
 
-        let basePrompt = mode == .singleVoice
-            ? settings.singleVoiceSystemPrompt
-            : settings.multiTalkSystemPrompt
+        // The active SystemPrompt's content (from SwiftData) is now the
+        // source of truth. For multi-talk we still rewrite the
+        // `{Speaker N}` / "speaker count" placeholders against the
+        // current speaker-count picker.
         let systemPrompt = mode == .multiTalk
-            ? basePrompt.replacingOccurrences(of: "{Speaker N}", with: "{Speaker \(speakerCount)}")
-                         .replacingOccurrences(of: "speaker count", with: "\(speakerCount)")
-            : basePrompt
+            ? systemPromptContent
+                .replacingOccurrences(of: "{Speaker N}", with: "{Speaker \(speakerCount)}")
+                .replacingOccurrences(of: "speaker count", with: "\(speakerCount)")
+            : systemPromptContent
 
-        let client = LMStudioClient(baseURL: URL(string: settings.baseURL) ?? fallbackURL)
+        let client = LocalLLMClient(baseURL: URL(string: baseURL) ?? fallbackURL)
         let userMessage = ChatMessage(role: .user, content: prompt)
         let preferredModel = settings.model.isEmpty ? model : settings.model
 
