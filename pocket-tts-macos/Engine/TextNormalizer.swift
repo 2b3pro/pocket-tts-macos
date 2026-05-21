@@ -100,6 +100,92 @@ nonisolated enum TextNormalizer {
         return segments.isEmpty ? [.text(text)] : segments
     }
 
+    // MARK: - Stage-direction stripping
+    //
+    // LLMs (both the AI-Writer script generator and any chat assistant
+    // feeding the Chat-tab TTS) reliably ignore instructions to "no
+    // stage directions" and emit parenthetical asides like
+    // "(slams fist)", asterisk actions like "*squints*", and bracketed
+    // labels like "[whispering]". Strip them at the AI/Chat boundary
+    // before the text reaches the script editor or the synthesis
+    // pipeline.
+    //
+    // Backend-aware: the bracket form `[whispering]` is Fish Speech's
+    // emotional-tag syntax (Fish uses it as a control signal, not text),
+    // so we only strip brackets when the active backend is Pocket-TTS.
+    // Parens and asterisks neither model uses meaningfully — both are
+    // always stripped. Pause markers `[Xs]` always survive via the
+    // bracket rule's negative lookahead.
+    //
+    // Idempotent; safe to run on already-clean text.
+
+    private static let parenthetical = try! NSRegularExpression(
+        // Non-greedy parens. Nested parens aren't handled — a `(He said
+        // (loudly))` would leave a trailing `)` after the first pass.
+        // Rare enough in practice that a fixpoint loop isn't worth it.
+        pattern: #"\([^)]*\)"#,
+        options: []
+    )
+
+    private static let asteriskAction = try! NSRegularExpression(
+        // Matches `*action*`, `**action**`, `***action***`. Requires at
+        // least one non-`*` char between the markers so `2 * 3` (no
+        // inner content surrounded by *s) doesn't match.
+        pattern: #"\*+[^*\n]+\*+"#,
+        options: []
+    )
+
+    private static let bracketedAside = try! NSRegularExpression(
+        // Strip `[whispering]` / `[off-screen]` style asides but
+        // PRESERVE `[1.5s]` / `[2s]` pause markers — the negative
+        // lookahead `(?!...)` bails when the bracket contents match
+        // the pause-marker shape `\d+(\.\d+)?s`. Only fired when the
+        // caller passes `stripBracketedTags: true` (Pocket-TTS path).
+        pattern: #"\[(?!\s*\d+(?:\.\d+)?\s*s\s*\])[^\]\n]*\]"#,
+        options: .caseInsensitive
+    )
+
+    /// Strip stage-direction-style markup from `text`.
+    ///
+    /// - Always stripped: parenthetical asides `(slams fist)` and
+    ///   asterisk actions `*squints*` / `**laughs**`. Neither the
+    ///   Pocket-TTS nor Fish-Speech model uses these meaningfully.
+    /// - Conditionally stripped: bracketed tags `[whispering]`. Pass
+    ///   `stripBracketedTags: true` for the Pocket-TTS backend (which
+    ///   pronounces them as garbage); leave `false` (the default) for
+    ///   Fish Speech, where bracketed tokens are emotional-tag control
+    ///   signals and must reach the synthesizer verbatim.
+    /// - Always preserved: pause markers `[1.5s]`, speaker tags
+    ///   `{Speaker 1}`. Both use syntax the strip patterns ignore.
+    static func stripStageDirections(_ text: String, stripBracketedTags: Bool = false) -> String {
+        var working = text
+
+        var regexes: [NSRegularExpression] = [parenthetical, asteriskAction]
+        if stripBracketedTags {
+            regexes.append(bracketedAside)
+        }
+        for regex in regexes {
+            let range = NSRange(location: 0, length: (working as NSString).length)
+            working = regex.stringByReplacingMatches(in: working, range: range, withTemplate: "")
+        }
+
+        // Collapse the doubled spaces / dangling space-before-punct that
+        // stripping leaves behind. Two passes:
+        //   1. `  +` → single space (any run of 2+ spaces)
+        //   2. ` ([,.!?;:])` → just the punctuation (no leading space)
+        working = working.replacingOccurrences(of: "  +", with: " ", options: .regularExpression)
+        working = working.replacingOccurrences(of: " ([,.!?;:])", with: "$1", options: .regularExpression)
+
+        // Trim each line individually so a stripped opening direction
+        // doesn't leave a leading space at the start of a Multi-Talk
+        // speaker block. `\{` speaker tags survive because the
+        // patterns above don't touch curly braces.
+        let lines = working.components(separatedBy: "\n").map { line in
+            line.trimmingCharacters(in: .whitespaces)
+        }
+        return lines.joined(separator: "\n")
+    }
+
     // MARK: - Public API
 
     static func normalize(_ text: String) -> String {
@@ -223,8 +309,17 @@ nonisolated enum TextNormalizer {
         pattern: "\\b(\\d{1,3})/(\\d{1,3})\\b", options: []
     )
 
+    // Matches any run of 2+ contiguous uppercase letters with word
+    // boundaries. The expansion (see `expandAcronym`) lowercases the
+    // match by default — letter-spelling is reserved for the
+    // `spokenAcronyms` whitelist's COMPLEMENT only if the user wants
+    // it, but the model handles "fbi" / "cia" passably enough that
+    // emphasis-style ALL CAPS ("HELLO", "AMAZING") was a worse failure
+    // mode than letter-spelled real acronyms. Width is unbounded (was
+    // `{2,5}` previously); 6+ char all-caps words like "AMAZING" need
+    // the same treatment.
     private static let acronymPattern = try! NSRegularExpression(
-        pattern: "\\b([A-Z]{2,5})\\b", options: []
+        pattern: "\\b([A-Z]{2,})\\b", options: []
     )
 
     private static let domainTermKeysSorted = domainTerms.keys.sorted { $0.count > $1.count }
@@ -359,10 +454,19 @@ nonisolated enum TextNormalizer {
         return domainTerms[term] ?? term
     }
 
+    /// Default behavior for ALL-CAPS runs: lowercase the word so the
+    /// model pronounces it like normal text. The previous behavior was
+    /// to letter-spell it ("FBI" → "F B I"), which is correct for
+    /// initialisms but butchers emphasis-style ALL CAPS ("I LOVE THIS",
+    /// "WOW", "AMAZING") that LLMs + humans frequently produce. Letter
+    /// spelling is preserved only for `spokenAcronyms`-listed words
+    /// flipped into the *spell-out* role — see the whitelist for the
+    /// short list of words we DO want letter-spelled (none currently,
+    /// the set is now used for the opposite: words to read as-is).
     private static func expandAcronym(_ m: NSTextCheckingResult, in s: String) -> String {
         guard let word = group(m, 1, in: s) else { return group(m, 0, in: s) ?? "" }
         if spokenAcronyms.contains(word) { return word }
-        return word.map { String($0) }.joined(separator: " ")
+        return word.lowercased()
     }
 
     private static func expandSymbol(_ m: NSTextCheckingResult, in s: String) -> String {
