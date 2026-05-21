@@ -207,7 +207,19 @@ final class ChatViewModel {
                 self.status = .speaking(sentenceIndex: sentenceIndex)
 
                 let voiceID = self.settings.ttsVoiceID
-                let synthStream = self.engine.synthesize(text: sentence, voiceID: voiceID, options: self.currentSynthesisOptions())
+                // Strip LLM-emitted stage directions before speaking —
+                // chat models commonly emit "(squints)" / "*sighs*"
+                // mid-reply despite system-prompt instructions. The
+                // transcript view still shows the original content
+                // (we strip only on the way to TTS, not to display).
+                // Backend-aware: bracketed tags `[whispering]` are
+                // Fish's emotional-tag control syntax and pass
+                // through when Fish is active; Pocket-TTS strips.
+                let speakable = TextNormalizer.stripStageDirections(
+                    sentence,
+                    stripBracketedTags: self.settings.activeBackend == .pocketTTS
+                )
+                let synthStream = self.engine.synthesize(text: speakable, voiceID: voiceID, options: self.currentSynthesisOptions())
 
                 // Play this sentence and await full drain before the next.
                 do {
@@ -292,10 +304,22 @@ final class ChatViewModel {
     }
 
     private func formatTranscriptMultiTalk() -> String {
+        // Strip stage directions when importing a chat conversation
+        // into a Multi-Talk script. The markdown export
+        // (`formatTranscriptMarkdown`) intentionally does NOT strip —
+        // a saved transcript should preserve the assistant's full
+        // output for the user's records — but the Multi-Talk script
+        // is going straight into the synthesis pipeline and we don't
+        // want "(grins)" landing on a script line. Backend-aware: if
+        // Fish is currently the active backend the user likely wants
+        // bracketed emotional tags to survive the import; Pocket-TTS
+        // strips them.
+        let stripBrackets = settings.activeBackend == .pocketTTS
         var lines: [String] = []
         for msg in messages where msg.role != .system && !msg.content.isEmpty {
             let tag = msg.role == .user ? "{Speaker 1}" : "{Speaker 2}"
-            lines.append("\(tag) \(msg.content)")
+            let cleaned = TextNormalizer.stripStageDirections(msg.content, stripBracketedTags: stripBrackets)
+            lines.append("\(tag) \(cleaned)")
         }
         return lines.joined(separator: "\n")
     }

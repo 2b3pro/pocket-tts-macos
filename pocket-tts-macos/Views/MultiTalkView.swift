@@ -94,7 +94,17 @@ struct MultiTalkView: View {
                     mode: .multiTalk,
                     chatSettings: $chatSettings,
                     onAccept: { script, speakerNames in
-                        viewModel.script = script
+                        // Strip LLM-emitted stage directions before
+                        // populating the editor. Backend-aware:
+                        // bracket tags `[whispering]` are Fish's
+                        // emotional-tag syntax and survive when
+                        // Fish is active; Pocket-TTS strips them.
+                        // Parens + asterisks always go; pause
+                        // markers `[Xs]` survive either way.
+                        viewModel.script = TextNormalizer.stripStageDirections(
+                            script,
+                            stripBracketedTags: chatSettings.activeBackend == .pocketTTS
+                        )
                         viewModel.applySpeakersFromGeneration(names: speakerNames, voices: voices)
                     }
                 )

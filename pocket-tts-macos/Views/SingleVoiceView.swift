@@ -73,7 +73,20 @@ struct SingleVoiceView: View {
                     isPresented: $showGenerator,
                     mode: .singleVoice,
                     chatSettings: $chatSettings,
-                    onAccept: { script, _ in viewModel.text = script }
+                    onAccept: { script, _ in
+                        // Strip LLM-emitted stage directions before
+                        // populating the editor. Parens + asterisks
+                        // always go (neither backend uses them);
+                        // brackets ONLY strip for Pocket-TTS — Fish
+                        // Speech treats `[whispering]` as an
+                        // emotional-tag control signal and needs them
+                        // intact. Pause markers `[1.5s]` survive
+                        // either way via negative-lookahead.
+                        viewModel.text = TextNormalizer.stripStageDirections(
+                            script,
+                            stripBracketedTags: chatSettings.activeBackend == .pocketTTS
+                        )
+                    }
                 )
             }
         }

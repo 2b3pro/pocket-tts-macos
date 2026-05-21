@@ -138,16 +138,151 @@ final class TextNormalizerTests: XCTestCase {
         XCTAssertTrue(TextNormalizer.normalize("Use DoDAF views").contains("doh-daf"))
     }
 
-    // MARK: - Acronyms
+    // MARK: - ALL CAPS / acronyms
+    //
+    // Default behavior: ALL-CAPS words lowercase down to normal text so
+    // the model pronounces them as words ("HELLO" → "hello", "FBI" →
+    // "fbi"). Letter-spelling was the prior default and reliably
+    // butchered emphasis-style ALL CAPS that LLMs + humans produce.
+    // Real initialisms that read fine as a word (NASA, NATO, ASAP)
+    // stay preserved via `spokenAcronyms`.
 
-    func test_acronymSpelling() {
+    func test_allCapsLowercasedToNormalText() {
+        // Single-word emphasis case — the main reason this rule
+        // changed. "HELLO" was previously spelled out "H E L L O".
+        let result = TextNormalizer.normalize("She said HELLO loudly.")
+        XCTAssertTrue(result.contains("hello"), "Got: \(result)")
+        XCTAssertFalse(result.contains("H E L L O"), "Got: \(result)")
+    }
+
+    func test_allCapsLongWordLowercased() {
+        // The previous {2,5} regex missed 6+ char ALL CAPS like
+        // "AMAZING". Verify the widened pattern catches it.
+        let result = TextNormalizer.normalize("That is AMAZING news.")
+        XCTAssertTrue(result.contains("amazing"), "Got: \(result)")
+    }
+
+    func test_allCapsAcronymLowercased() {
+        // Non-whitelisted acronyms also lowercase. "FBI" → "fbi";
+        // the model handles it well enough that this is preferable
+        // to the previous letter-spelled "F B I" which had its own
+        // pronunciation quirks (mid-word pauses, etc.).
         let result = TextNormalizer.normalize("The FBI investigates")
-        XCTAssertTrue(result.contains("F B I"), "Got: \(result)")
+        XCTAssertTrue(result.contains("fbi"), "Got: \(result)")
+        XCTAssertFalse(result.contains("F B I"), "Got: \(result)")
     }
 
     func test_spokenAcronymPreserved() {
+        // Whitelist still wins — NASA is read as a word by the model
+        // when capitalized, so don't touch it.
         let result = TextNormalizer.normalize("NASA launched")
         XCTAssertTrue(result.contains("NASA"), "Got: \(result)")
+    }
+
+    func test_mixedCaseUntouched() {
+        // Title-cased and CamelCase words should pass through. The
+        // pattern requires `[A-Z]{2,}` at word boundaries.
+        XCTAssertEqual(TextNormalizer.normalize("Hello World"), "Hello World")
+        XCTAssertEqual(TextNormalizer.normalize("iPhone updated"), "iPhone updated")
+    }
+
+    // MARK: - Stage-direction stripping
+    //
+    // LLMs reliably emit parenthetical / asterisk / bracketed asides
+    // ("(slams fist)", "*squints*", "[whispering]") even when told not
+    // to. `stripStageDirections` is applied at the AI-source boundary
+    // (AI Writer modal output, Chat-tab sentence-to-TTS dispatch,
+    // chat-transcript-to-MultiTalk export).
+
+    func test_stripStageDirections_parenthetical() {
+        let input = "He sighed (slams fist down) and continued."
+        let expected = "He sighed and continued."
+        XCTAssertEqual(TextNormalizer.stripStageDirections(input), expected)
+    }
+
+    func test_stripStageDirections_asteriskAction() {
+        let input = "Well *squints* I'm not sure about that."
+        let expected = "Well I'm not sure about that."
+        XCTAssertEqual(TextNormalizer.stripStageDirections(input), expected)
+    }
+
+    func test_stripStageDirections_doubleAsterisk() {
+        // Markdown-style **bold** asides also get stripped — common
+        // pattern from LLMs trying to "emphasize" stage directions.
+        let input = "She said **laughs** that's funny."
+        let expected = "She said that's funny."
+        XCTAssertEqual(TextNormalizer.stripStageDirections(input), expected)
+    }
+
+    func test_stripStageDirections_bracketsPreservedByDefault() {
+        // Default (`stripBracketedTags: false`) keeps brackets intact —
+        // this is the Fish-Speech path, where `[whispering]` is an
+        // emotional-tag control signal the synthesizer reads directly.
+        let input = "Then [whispering] don't tell anyone."
+        let expected = "Then [whispering] don't tell anyone."
+        XCTAssertEqual(TextNormalizer.stripStageDirections(input), expected)
+    }
+
+    func test_stripStageDirections_bracketsStrippedWhenRequested() {
+        // Pocket-TTS path — `stripBracketedTags: true` removes
+        // `[whispering]` because the synth can't use it.
+        let input = "Then [whispering] don't tell anyone."
+        let expected = "Then don't tell anyone."
+        XCTAssertEqual(
+            TextNormalizer.stripStageDirections(input, stripBracketedTags: true),
+            expected
+        )
+    }
+
+    func test_stripStageDirections_preservesPauseMarkersEvenWhenStripping() {
+        // The bracket rule has a negative lookahead for `\d+s` so pause
+        // markers survive regardless of `stripBracketedTags`. Both
+        // Multi-Talk and Single Voice rely on pause markers reaching
+        // `parsePauseMarkers` intact.
+        let input = "Hello. [1.5s] World."
+        XCTAssertEqual(
+            TextNormalizer.stripStageDirections(input),
+            input
+        )
+        XCTAssertEqual(
+            TextNormalizer.stripStageDirections(input, stripBracketedTags: true),
+            input
+        )
+    }
+
+    func test_stripStageDirections_preservesSpeakerTags() {
+        // Curly-brace speaker tags are never touched; they're used for
+        // Multi-Talk speaker assignment downstream. Parens + asterisks
+        // strip in both modes; brackets only strip with the flag.
+        let input = "{Alice} hello (waves) world {Bob} hi *grins*"
+        let expected = "{Alice} hello world {Bob} hi"
+        XCTAssertEqual(TextNormalizer.stripStageDirections(input), expected)
+        XCTAssertEqual(
+            TextNormalizer.stripStageDirections(input, stripBracketedTags: true),
+            expected
+        )
+    }
+
+    func test_stripStageDirections_collapsesSpaceBeforePunctuation() {
+        // Stripping "(blah)" between a word and its terminal `.`
+        // shouldn't leave a dangling space before the period.
+        let input = "He went home (eventually)."
+        let expected = "He went home."
+        XCTAssertEqual(TextNormalizer.stripStageDirections(input), expected)
+    }
+
+    func test_stripStageDirections_idempotent() {
+        // Running twice should match running once — safe to invoke at
+        // multiple boundaries without compounding effects.
+        let input = "Hello (grins) world."
+        let once = TextNormalizer.stripStageDirections(input)
+        let twice = TextNormalizer.stripStageDirections(once)
+        XCTAssertEqual(once, twice)
+    }
+
+    func test_stripStageDirections_noop_whenNothingToStrip() {
+        let input = "Just plain text with no stage directions."
+        XCTAssertEqual(TextNormalizer.stripStageDirections(input), input)
     }
 
     // MARK: - Symbols
