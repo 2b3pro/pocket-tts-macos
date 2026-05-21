@@ -9,6 +9,19 @@ import AVFoundation
 import SwiftUI
 import UniformTypeIdentifiers
 
+// MARK: - UTType.m4a
+//
+// Apple's `UTType.mpeg4Audio` carries identifier `public.mpeg-4-audio` which
+// is registered in UTType's database such that SwiftUI's `.fileExporter`
+// resolves its preferred filename extension to `mp4`, NOT `m4a`. The
+// observable bug: clicking "Download AAC (.m4a)" produced
+// `pocket-tts-output.mp4` on disk. Defining a project-local UTType anchored
+// to the literal extension `"m4a"` forces the Save sheet to use the right
+// extension regardless of how the system has the MPEG-4 UTI registered.
+nonisolated extension UTType {
+    static let m4a: UTType = UTType(filenameExtension: "m4a", conformingTo: .audio)!
+}
+
 struct AudioPlayer: View {
     /// PCM samples (24 kHz mono Float32, [-1, +1]) — the same format the
     /// engine emits and the StreamingPlayer consumed live.
@@ -181,9 +194,11 @@ struct AudioPlayer: View {
             do {
                 try await AACEncoder.write(samples: samples, to: tmp, sampleRate: 24_000)
                 await MainActor.run {
-                    // .mpeg4Audio is `public.mpeg-4-audio` — drives the Save
-                    // sheet to use a `.m4a` extension.
-                    saveExporter = SaveExporter(sourceURL: tmp, contentType: .mpeg4Audio, suggestedName: "pocket-tts-output")
+                    // `.m4a` is our project-local UTType (see top of file)
+                    // anchored to the literal `"m4a"` extension. Apple's
+                    // `.mpeg4Audio` resolves to `.mp4` here, which is the
+                    // bug this works around.
+                    saveExporter = SaveExporter(sourceURL: tmp, contentType: .m4a, suggestedName: "pocket-tts-output")
                 }
             } catch {
                 FileHandle.standardError.write(Data("AAC export failed: \(error)\n".utf8))
@@ -206,8 +221,11 @@ struct AudioPlayer: View {
 private struct SaveExporter: FileDocument {
     static let readableContentTypes: [UTType] = []
     // Both formats declared here so SwiftUI's fileExporter can route to the
-    // right Save-sheet extension based on the `contentType` param.
-    static let writableContentTypes: [UTType] = [.wav, .mpeg4Audio]
+    // right Save-sheet extension based on the `contentType` param. `.m4a` is
+    // the project-local UTType (defined at top of this file) — using Apple's
+    // `.mpeg4Audio` here would route AAC exports to `.mp4` due to a
+    // UTType-registration quirk.
+    static let writableContentTypes: [UTType] = [.wav, .m4a]
 
     let sourceURL: URL
     let contentType: UTType
