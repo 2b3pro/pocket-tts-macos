@@ -16,6 +16,7 @@ struct ContentView: View {
     @State private var historyVM = HistoryViewModel()
     @State private var chatVM: ChatViewModel?
     @State private var voiceChangerVM: VoiceChangerViewModel?
+    @State private var speakerIsolatorVM: SpeakerIsolatorViewModel?
 
     @State private var voices: [BundledVoice] = []
 
@@ -127,6 +128,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $appState.showsVoiceChanger) {
             voiceChangerSheetBody
+        }
+        .sheet(isPresented: $appState.showsSpeakerIsolator) {
+            speakerIsolatorSheetBody
         }
         .sheet(isPresented: $appState.showsVoiceManager) {
             VoiceManagerView(
@@ -335,7 +339,8 @@ struct ContentView: View {
                     appState: appState,
                     voices: voices,
                     pendingReuse: $appState.pendingReuse,
-                    chatSettings: $appState.chatSettings
+                    chatSettings: $appState.chatSettings,
+                    showsSpeakerIsolator: $appState.showsSpeakerIsolator
                 )
             case .history:
                 HistoryView(
@@ -418,6 +423,41 @@ struct ContentView: View {
                 chatSettings: $appState.chatSettings
             )
             .onDisappear { voiceChangerVM = nil }
+        } else {
+            VStack(spacing: Theme.space3) {
+                ProgressView().controlSize(.large).tint(Theme.accent)
+                Text("Loading TTS engine…")
+                    .font(Theme.fontSM)
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            .frame(width: 540, height: 200)
+            .background(Theme.bgPrimary)
+        }
+    }
+
+    // MARK: - Speaker Isolator sheet body
+
+    /// Builds the Speaker Isolator sheet against the currently-active
+    /// engine. Rebuilt per presentation (same pattern as Voice Changer)
+    /// so a backend swap picks up the right engine. Falls back to a
+    /// loading placeholder if the engine hasn't bootstrapped yet (the
+    /// ⌥⌘I shortcut can fire from any tab before launch finishes).
+    @ViewBuilder
+    private var speakerIsolatorSheetBody: some View {
+        if appState.engine != nil {
+            let vm = speakerIsolatorVM ?? {
+                let new = SpeakerIsolatorViewModel(engine: appState.activeEngine)
+                speakerIsolatorVM = new
+                return new
+            }()
+            SpeakerIsolatorSheet(
+                isPresented: $appState.showsSpeakerIsolator,
+                viewModel: vm,
+                voices: voices,
+                modelManager: WhisperModelManager.shared,
+                chatSettings: $appState.chatSettings
+            )
+            .onDisappear { speakerIsolatorVM = nil }
         } else {
             VStack(spacing: Theme.space3) {
                 ProgressView().controlSize(.large).tint(Theme.accent)

@@ -48,6 +48,16 @@ actor MultiSpeakerRevoicer {
         }
     }
 
+    /// Disposition for a single row in the user's per-speaker
+    /// mapping table. Maps onto `SpeakerAction` from the view-model
+    /// layer; restated here so the engine layer doesn't import view
+    /// model types.
+    enum Disposition: Sendable {
+        case useOriginal
+        case discard
+        case revoice(voiceID: String)
+    }
+
     /// One row from the user's per-speaker voice-mapping table.
     struct SpeakerAssignment: Sendable {
         let speakerID: String
@@ -55,9 +65,7 @@ actor MultiSpeakerRevoicer {
         /// input length (i.e. what SpeakerIsolator emits with
         /// preserveSilence=true).
         let isolatedSamples: [Float]
-        /// Voice to revoice with; nil = passthrough the isolated
-        /// audio unchanged.
-        let voiceID: String?
+        let disposition: Disposition
     }
 
     /// Revoice + combine. Returns one master [Float] of exactly
@@ -77,7 +85,15 @@ actor MultiSpeakerRevoicer {
             try Task.checkCancellation()
 
             let perSpeaker: [Float]
-            if let voiceID = assignment.voiceID, !voiceID.isEmpty {
+            switch assignment.disposition {
+            case .discard:
+                // User excluded this row from the final output.
+                // Skip the sum entirely.
+                print("[Revoicer] \(assignment.speakerID) discarded — excluded from output")
+                continue
+            case .useOriginal:
+                perSpeaker = assignment.isolatedSamples
+            case .revoice(let voiceID):
                 perSpeaker = try await revoiceSingleSpeaker(
                     assignment: assignment,
                     voiceID: voiceID,
@@ -87,8 +103,6 @@ actor MultiSpeakerRevoicer {
                     stt: stt,
                     onProgress: onProgress
                 )
-            } else {
-                perSpeaker = assignment.isolatedSamples
             }
 
             // Sum into the combined master (clamped to the master's
@@ -143,12 +157,22 @@ actor MultiSpeakerRevoicer {
             throw RevoicerError.sttFailed(speakerID: assignment.speakerID, error)
         }
 
+        // Console log every transcribed segment so we can spot
+        // Whisper artifacts that aren't in the strip whitelist yet
+        // (TextNormalizer.stripWhisperArtifacts). When the user sees
+        // a `[brand new tag]` slipping through to TTS, the line
+        // showing the exact bracketed text is right here in the log.
+        print("[Revoicer] STT for \(assignment.speakerID) produced \(segments.count) segments:")
+        for seg in segments {
+            print(String(format: "  [%.2f-%.2fs] \"%@\"", seg.startSec, seg.endSec, seg.text))
+        }
+
         // Hand off to TimelineAlignedRenderer with the chosen voice.
         // The per-segment progress callback gets wrapped so the
         // speakerID label flows up to the UI ("Synthesizing
         // Speaker A: segment 3/12…").
         let speakerID = assignment.speakerID
-        let samples = await TimelineAlignedRenderer.render(
+        let synthesized = await TimelineAlignedRenderer.render(
             segments: segments,
             totalDurationSec: totalDurationSec,
             voiceID: voiceID,
@@ -158,6 +182,50 @@ actor MultiSpeakerRevoicer {
                 onProgress?(speakerID, current, total)
             }
         )
-        return samples
+
+        // Match the synthesized track's loudness to the speaker's
+        // original audio. Without this, the TTS voice plays at the
+        // per-voice baked-in RMS target which is typically louder than
+        // (and inconsistent across) the original speakers' levels.
+        // Compute RMS over non-silence samples only on both sides so
+        // the comparison is fair (silence-padded regions don't pull
+        // the average down).
+        let inputRMS = Self.rmsOfActiveSamples(assignment.isolatedSamples)
+        let outputRMS = Self.rmsOfActiveSamples(synthesized)
+        if inputRMS > 0, outputRMS > 0 {
+            // Cap the gain to ±12 dB so a quiet original doesn't
+            // amplify TTS noise floor into audibility, and a loud
+            // original doesn't clip the output.
+            let raw = inputRMS / outputRMS
+            let clamped = max(0.25, min(raw, 4.0))
+            print(String(format: "[Revoicer] %@ RMS normalize: input=%.4f output=%.4f gain=%.3fx (clamped from %.3fx)",
+                         speakerID, inputRMS, outputRMS, clamped, raw))
+            var scaled = synthesized
+            for i in 0..<scaled.count {
+                scaled[i] *= clamped
+            }
+            return scaled
+        } else {
+            print("[Revoicer] \(speakerID) RMS normalize skipped (inputRMS=\(inputRMS), outputRMS=\(outputRMS))")
+            return synthesized
+        }
+    }
+
+    // MARK: - RMS
+
+    /// Mean-squared average of samples whose magnitude exceeds a
+    /// silence threshold. Skipping near-zero samples gives a fair
+    /// comparison between silence-padded isolated tracks and the
+    /// TTS output (which has small non-zero values during pause
+    /// regions due to fade ramps).
+    nonisolated static func rmsOfActiveSamples(_ samples: [Float], silenceThreshold: Float = 0.001) -> Float {
+        var sumSq: Double = 0
+        var n: Int = 0
+        for s in samples where abs(s) > silenceThreshold {
+            sumSq += Double(s) * Double(s)
+            n += 1
+        }
+        guard n > 0 else { return 0 }
+        return Float(sqrt(sumSq / Double(n)))
     }
 }

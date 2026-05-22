@@ -3,7 +3,7 @@
 //  pocket-tts-macosTests
 //
 //  Tests the per-speaker dispatch + combine logic in
-//  MultiSpeakerRevoicer. The passthrough path (voiceID == nil) is
+//  MultiSpeakerRevoicer. The passthrough path (.useOriginal) is
 //  fully exercised against synthetic input. The revoice path uses
 //  mock STT + TTS engine implementations to verify the wiring
 //  without requiring real Core ML models / Apple Speech
@@ -47,9 +47,9 @@ final class MultiSpeakerRevoicerTests: XCTestCase {
 
         let assignments = [
             MultiSpeakerRevoicer.SpeakerAssignment(
-                speakerID: "SPEAKER_00", isolatedSamples: aSamples, voiceID: nil),
+                speakerID: "SPEAKER_00", isolatedSamples: aSamples, disposition: .useOriginal),
             MultiSpeakerRevoicer.SpeakerAssignment(
-                speakerID: "SPEAKER_01", isolatedSamples: bSamples, voiceID: nil),
+                speakerID: "SPEAKER_01", isolatedSamples: bSamples, disposition: .useOriginal),
         ]
 
         let revoicer = MultiSpeakerRevoicer()
@@ -77,8 +77,8 @@ final class MultiSpeakerRevoicerTests: XCTestCase {
         let a = [Float](repeating: 0.7, count: totalSamples)
         let b = [Float](repeating: 0.7, count: totalSamples)
         let assignments = [
-            MultiSpeakerRevoicer.SpeakerAssignment(speakerID: "A", isolatedSamples: a, voiceID: nil),
-            MultiSpeakerRevoicer.SpeakerAssignment(speakerID: "B", isolatedSamples: b, voiceID: nil),
+            MultiSpeakerRevoicer.SpeakerAssignment(speakerID: "A", isolatedSamples: a, disposition: .useOriginal),
+            MultiSpeakerRevoicer.SpeakerAssignment(speakerID: "B", isolatedSamples: b, disposition: .useOriginal),
         ]
         let revoicer = MultiSpeakerRevoicer()
         let result = try await revoicer.revoice(
@@ -97,8 +97,8 @@ final class MultiSpeakerRevoicerTests: XCTestCase {
         let a = [Float](repeating: -0.7, count: totalSamples)
         let b = [Float](repeating: -0.7, count: totalSamples)
         let assignments = [
-            MultiSpeakerRevoicer.SpeakerAssignment(speakerID: "A", isolatedSamples: a, voiceID: nil),
-            MultiSpeakerRevoicer.SpeakerAssignment(speakerID: "B", isolatedSamples: b, voiceID: nil),
+            MultiSpeakerRevoicer.SpeakerAssignment(speakerID: "A", isolatedSamples: a, disposition: .useOriginal),
+            MultiSpeakerRevoicer.SpeakerAssignment(speakerID: "B", isolatedSamples: b, disposition: .useOriginal),
         ]
         let revoicer = MultiSpeakerRevoicer()
         let result = try await revoicer.revoice(
@@ -122,7 +122,7 @@ final class MultiSpeakerRevoicerTests: XCTestCase {
         let aSamples = [Float](repeating: 0.5, count: half)
         let assignments = [
             MultiSpeakerRevoicer.SpeakerAssignment(
-                speakerID: "SHORTY", isolatedSamples: aSamples, voiceID: nil)
+                speakerID: "SHORTY", isolatedSamples: aSamples, disposition: .useOriginal)
         ]
         let revoicer = MultiSpeakerRevoicer()
         let result = try await revoicer.revoice(
@@ -139,6 +139,56 @@ final class MultiSpeakerRevoicerTests: XCTestCase {
 
     // MARK: - Revoice path (mock STT + TTS)
 
+    // MARK: - Discard
+
+    func test_discardedSpeakerExcludedFromSum() async throws {
+        // Two passthrough speakers; B is discarded. Combined output
+        // should equal A's samples only (B contributes nothing).
+        let a = [Float](repeating: 0.3, count: totalSamples)
+        let b = [Float](repeating: 0.4, count: totalSamples)
+        let assignments = [
+            MultiSpeakerRevoicer.SpeakerAssignment(
+                speakerID: "A", isolatedSamples: a, disposition: .useOriginal),
+            MultiSpeakerRevoicer.SpeakerAssignment(
+                speakerID: "B", isolatedSamples: b, disposition: .discard),
+        ]
+        let revoicer = MultiSpeakerRevoicer()
+        let result = try await revoicer.revoice(
+            sampleRate: sampleRate,
+            totalDurationSec: oneSecondSec,
+            assignments: assignments,
+            engine: MockTTSEngine.failIfCalled(),
+            stt: MockSTTProvider.failIfCalled()
+        )
+        XCTAssertEqual(result.count, totalSamples)
+        // A contributes 0.3 everywhere; B is discarded → 0.0 contribution.
+        // Sum is exactly 0.3.
+        XCTAssertTrue(result.allSatisfy { $0 == 0.3 },
+                      "all samples should be just A's passthrough (B was discarded)")
+    }
+
+    func test_allDiscarded_returnsZeroBuffer() async throws {
+        // Edge case: every assignment is discarded → combined output
+        // is all silence.
+        let a = [Float](repeating: 0.5, count: totalSamples)
+        let assignments = [
+            MultiSpeakerRevoicer.SpeakerAssignment(
+                speakerID: "A", isolatedSamples: a, disposition: .discard),
+        ]
+        let revoicer = MultiSpeakerRevoicer()
+        let result = try await revoicer.revoice(
+            sampleRate: sampleRate,
+            totalDurationSec: oneSecondSec,
+            assignments: assignments,
+            engine: MockTTSEngine.failIfCalled(),
+            stt: MockSTTProvider.failIfCalled()
+        )
+        XCTAssertEqual(result.count, totalSamples)
+        XCTAssertTrue(result.allSatisfy { $0 == 0.0 })
+    }
+
+    // MARK: - Revoice routing
+
     func test_revoicePath_routesAssignedSpeakerThroughSTTAndEngine() async throws {
         // One passthrough speaker + one revoice speaker. The mock
         // engine returns a stream of frames filled with 0.2; the mock
@@ -153,9 +203,9 @@ final class MultiSpeakerRevoicerTests: XCTestCase {
 
         let assignments = [
             MultiSpeakerRevoicer.SpeakerAssignment(
-                speakerID: "PASS", isolatedSamples: passthroughSamples, voiceID: nil),
+                speakerID: "PASS", isolatedSamples: passthroughSamples, disposition: .useOriginal),
             MultiSpeakerRevoicer.SpeakerAssignment(
-                speakerID: "REVOICE", isolatedSamples: revoiceIsolated, voiceID: "cosette"),
+                speakerID: "REVOICE", isolatedSamples: revoiceIsolated, disposition: .revoice(voiceID: "cosette")),
         ]
         let revoicer = MultiSpeakerRevoicer()
         let result = try await revoicer.revoice(

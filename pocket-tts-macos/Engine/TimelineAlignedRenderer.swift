@@ -79,7 +79,19 @@ nonisolated enum TimelineAlignedRenderer {
             if Task.isCancelled { break }
             onProgress?(i + 1, total)
 
-            let trimmed = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Strip Whisper's non-speech markers ([music], [silence],
+            // [laughter], etc.) before sending to TTS — otherwise the
+            // synthesizer speaks them literally ("bracket music
+            // bracket"). The stripping is a fixed-whitelist pass so
+            // it won't touch legitimate bracketed content like pause
+            // markers; see TextNormalizer.stripWhisperArtifacts.
+            let cleaned = TextNormalizer.stripWhisperArtifacts(segment.text)
+            let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+            // If stripping left nothing (the segment was purely an
+            // artifact like just "[music]"), skip — would emit dead
+            // air at the segment offset instead of a "bracket music
+            // bracket" reading.
+            if trimmed.isEmpty { continue }
 
             // 1. Synthesize this segment in isolation.
             var segSamples: [Float] = []

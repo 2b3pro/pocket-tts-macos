@@ -216,4 +216,207 @@ final class SpeakerIsolatorTests: XCTestCase {
         // Zero-length segment → zero samples concatenated.
         XCTAssertEqual(out[0].samples.count, 0)
     }
+
+    // MARK: - Complement / merge math (used by extractBackground)
+
+    func test_mergeOverlapping_emptyInput() {
+        XCTAssertEqual(SpeakerIsolator.mergeOverlapping([]), [])
+    }
+
+    func test_mergeOverlapping_nonOverlapping() {
+        let ranges: [ClosedRange<Double>] = [0.0...1.0, 2.0...3.0]
+        XCTAssertEqual(SpeakerIsolator.mergeOverlapping(ranges), ranges)
+    }
+
+    func test_mergeOverlapping_overlapsCollapse() {
+        let ranges: [ClosedRange<Double>] = [0.0...2.0, 1.5...3.0, 2.5...4.0]
+        XCTAssertEqual(SpeakerIsolator.mergeOverlapping(ranges), [0.0...4.0])
+    }
+
+    func test_mergeOverlapping_touchingRangesMerge() {
+        // Range ending at 1.0 and another starting at 1.0 are
+        // considered touching → merge into one [0.0...2.0].
+        let ranges: [ClosedRange<Double>] = [0.0...1.0, 1.0...2.0]
+        XCTAssertEqual(SpeakerIsolator.mergeOverlapping(ranges), [0.0...2.0])
+    }
+
+    func test_mergeOverlapping_outOfOrderInput() {
+        // Input order shouldn't matter — function sorts internally.
+        let ranges: [ClosedRange<Double>] = [3.0...4.0, 0.0...1.0, 2.0...2.5]
+        XCTAssertEqual(SpeakerIsolator.mergeOverlapping(ranges),
+                       [0.0...1.0, 2.0...2.5, 3.0...4.0])
+    }
+
+    func test_computeComplement_emptyInputReturnsFullTimeline() {
+        let out = SpeakerIsolator.computeComplement([], totalDurationSec: 10.0)
+        XCTAssertEqual(out, [0.0...10.0])
+    }
+
+    func test_computeComplement_fullCoverageReturnsEmpty() {
+        let out = SpeakerIsolator.computeComplement([0.0...10.0], totalDurationSec: 10.0)
+        XCTAssertEqual(out, [])
+    }
+
+    func test_computeComplement_gapsBetweenRanges() {
+        let out = SpeakerIsolator.computeComplement(
+            [1.0...2.0, 3.0...4.0],
+            totalDurationSec: 5.0
+        )
+        XCTAssertEqual(out, [0.0...1.0, 2.0...3.0, 4.0...5.0])
+    }
+
+    func test_computeComplement_leadingAndTrailingGapsOnly() {
+        let out = SpeakerIsolator.computeComplement(
+            [3.0...7.0],
+            totalDurationSec: 10.0
+        )
+        XCTAssertEqual(out, [0.0...3.0, 7.0...10.0])
+    }
+
+    // MARK: - extractBackground
+
+    func test_extractBackground_returnsNilForFullSpeechCoverage() {
+        // Single speaker covering the entire timeline → no background.
+        let segs = [DiarizedSegment(speakerID: "SPEAKER_00", startSec: 0.0, endSec: 1.0)]
+        let bg = SpeakerIsolator.extractBackground(
+            inputSamples: oneSecondRamp,
+            sampleRate: sampleRate,
+            speakerSegments: segs,
+            totalDurationSec: 1.0
+        )
+        XCTAssertNil(bg)
+    }
+
+    func test_extractBackground_returnsComplementSamples() {
+        // Speaker active only [0.25s..0.75s]; background should carry
+        // input samples in [0..0.25s] and [0.75s..1.0s], zero elsewhere.
+        let segs = [DiarizedSegment(speakerID: "SPEAKER_00", startSec: 0.25, endSec: 0.75)]
+        let bg = SpeakerIsolator.extractBackground(
+            inputSamples: oneSecondRamp,
+            sampleRate: sampleRate,
+            speakerSegments: segs,
+            totalDurationSec: 1.0
+        )
+        XCTAssertNotNil(bg)
+        guard let bg else { return }
+        XCTAssertEqual(bg.samples.count, sampleRate)
+
+        let q = sampleRate / 4
+        let q3 = 3 * sampleRate / 4
+        // Input present in the gap regions.
+        for i in 0..<q {
+            XCTAssertEqual(bg.samples[i], Float(i + 1))
+        }
+        // Silence where speaker was active.
+        for i in q..<q3 {
+            XCTAssertEqual(bg.samples[i], 0.0)
+        }
+        // Input present after speaker.
+        for i in q3..<sampleRate {
+            XCTAssertEqual(bg.samples[i], Float(i + 1))
+        }
+
+        // Range list reflects the complement: two ranges.
+        XCTAssertEqual(bg.ranges.count, 2)
+    }
+
+    func test_extractBackground_dropsSubThresholdSlivers() {
+        // 50ms gap between two speakers (under the 100ms default
+        // threshold) should be dropped from the background ranges.
+        let segs = [
+            DiarizedSegment(speakerID: "SPEAKER_00", startSec: 0.0,  endSec: 0.45),
+            DiarizedSegment(speakerID: "SPEAKER_01", startSec: 0.50, endSec: 1.0),
+        ]
+        let bg = SpeakerIsolator.extractBackground(
+            inputSamples: oneSecondRamp,
+            sampleRate: sampleRate,
+            speakerSegments: segs,
+            totalDurationSec: 1.0,
+            minBackgroundChunkSec: 0.1
+        )
+        // Only gap is 50ms (0.45..0.50) — below threshold → no
+        // background ranges → nil return.
+        XCTAssertNil(bg)
+    }
+
+    func test_extractBackground_mergesOverlappingSpeakerRanges() {
+        // Two overlapping speakers covering 0..0.8s combined; gap is
+        // 0.8..1.0s → that's the only background range.
+        let segs = [
+            DiarizedSegment(speakerID: "SPEAKER_00", startSec: 0.0, endSec: 0.6),
+            DiarizedSegment(speakerID: "SPEAKER_01", startSec: 0.4, endSec: 0.8),
+        ]
+        let bg = SpeakerIsolator.extractBackground(
+            inputSamples: oneSecondRamp,
+            sampleRate: sampleRate,
+            speakerSegments: segs,
+            totalDurationSec: 1.0
+        )
+        XCTAssertNotNil(bg)
+        XCTAssertEqual(bg?.ranges.count, 1)
+        XCTAssertEqual(bg?.ranges.first?.lowerBound ?? 0, 0.8, accuracy: 0.001)
+        XCTAssertEqual(bg?.ranges.first?.upperBound ?? 0, 1.0, accuracy: 0.001)
+    }
+}
+
+// MARK: - DiarizationSettings tests
+
+/// Unit coverage for the backend-agnostic settings struct that the
+/// Speaker Isolator UI surfaces and `SpeakerKitDiarizationProvider`
+/// translates into `PyannoteDiarizationOptions`. Pure value-type
+/// arithmetic — no diarizer involved.
+final class DiarizationSettingsTests: XCTestCase {
+
+    func test_defaultInit_isAutoDetectAtDefaultSensitivity() {
+        let s = DiarizationSettings()
+        XCTAssertNil(s.numberOfSpeakers)
+        XCTAssertEqual(s.sensitivity, DiarizationSettings.defaultSensitivity, accuracy: 0.0001)
+    }
+
+    func test_defaultSensitivity_mapsToPyannoteDefaultThreshold() {
+        // SpeakerKit's pyannote default for clusterDistanceThreshold
+        // is 0.6 (see SpeakerClustering.swift in the package). Our
+        // default sensitivity (0.5) must map onto 0.6 so the v1
+        // behavior is unchanged when the user doesn't touch the slider.
+        let s = DiarizationSettings()
+        XCTAssertEqual(s.pyannoteClusterDistanceThreshold, 0.6, accuracy: 0.0001)
+    }
+
+    func test_maxSensitivity_mapsToSmallestThreshold() {
+        // Pulling the slider all the way up should request the
+        // tightest clusters (most aggressive splits).
+        let s = DiarizationSettings(sensitivity: 1.0)
+        XCTAssertEqual(s.pyannoteClusterDistanceThreshold, 0.3, accuracy: 0.0001)
+    }
+
+    func test_zeroSensitivity_mapsToLargestThreshold() {
+        // Pulling all the way down should request the loosest
+        // clusters (most aggressive merges).
+        let s = DiarizationSettings(sensitivity: 0.0)
+        XCTAssertEqual(s.pyannoteClusterDistanceThreshold, 0.9, accuracy: 0.0001)
+    }
+
+    func test_init_clampsSensitivityToValidRange() {
+        // The UI binding clamps too, but the init guard is the
+        // final defense against bad caller input.
+        XCTAssertEqual(DiarizationSettings(sensitivity: -1.5).sensitivity, 0.0)
+        XCTAssertEqual(DiarizationSettings(sensitivity: 2.0).sensitivity, 1.0)
+    }
+
+    func test_numberOfSpeakers_passesThroughWhenSet() {
+        let s = DiarizationSettings(numberOfSpeakers: 4)
+        XCTAssertEqual(s.numberOfSpeakers, 4)
+    }
+
+    func test_equatable_distinguishesDifferentFields() {
+        XCTAssertEqual(DiarizationSettings(), DiarizationSettings())
+        XCTAssertNotEqual(
+            DiarizationSettings(numberOfSpeakers: 2),
+            DiarizationSettings(numberOfSpeakers: 3)
+        )
+        XCTAssertNotEqual(
+            DiarizationSettings(sensitivity: 0.5),
+            DiarizationSettings(sensitivity: 0.6)
+        )
+    }
 }

@@ -25,6 +25,81 @@
 
 import Foundation
 
+// MARK: - DiarizationSettings
+//
+// Backend-agnostic tuning knobs surfaced by the Speaker Isolator UI.
+// The defaults match each backend's out-of-the-box behavior — i.e.
+// passing `DiarizationSettings()` should produce identical output
+// to passing nothing at all.
+//
+// Backed today by SpeakerKit/pyannote, which maps these onto:
+//   * sensitivity        → clusterDistanceThreshold
+//                          (lower threshold = more aggressive splits,
+//                           so high sensitivity ⇒ low threshold)
+//   * numberOfSpeakers   → numberOfSpeakers (nil = auto-detect)
+//
+// The mapping lives in `SpeakerKitDiarizationProvider`; this struct
+// keeps the units neutral so future backends can interpret them in
+// whatever way makes sense for their algorithm.
+
+// `nonisolated` because the project default is
+// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` — without the opt-out
+// this struct would silently inherit MainActor isolation, blocking
+// `actor SpeakerKitDiarizationProvider` (which is its primary consumer)
+// from touching it without a hop. The struct is pure value-type
+// arithmetic; isolation is overkill.
+nonisolated struct DiarizationSettings: Sendable, Equatable {
+    /// Force the diarizer to find exactly this many speakers. `nil`
+    /// means auto-detect. Useful when the user knows the speaker count
+    /// up front (e.g. an interview with N panelists) and the auto-
+    /// detect heuristic is splitting or merging incorrectly.
+    var numberOfSpeakers: Int?
+
+    /// 0.0 ... 1.0. Higher = more aggressive about splitting voices
+    /// into separate speakers (good when two distinct people are
+    /// being merged into one cluster). Lower = more aggressive about
+    /// merging similar voices (good when one person is being split
+    /// across multiple clusters due to varying pitch / volume).
+    /// 0.5 maps to the pyannote default (clusterDistanceThreshold=0.6).
+    var sensitivity: Double
+
+    static let defaultSensitivity: Double = 0.5
+
+    init(
+        numberOfSpeakers: Int? = nil,
+        sensitivity: Double = DiarizationSettings.defaultSensitivity
+    ) {
+        self.numberOfSpeakers = numberOfSpeakers
+        self.sensitivity = min(max(sensitivity, 0.0), 1.0)
+    }
+
+    /// Map the normalized 0.0-1.0 sensitivity onto pyannote's
+    /// `clusterDistanceThreshold` range. SpeakerKit's default is 0.6;
+    /// sensitivity 0.5 returns 0.6 exactly. Sensitivity 1.0 → 0.3
+    /// (cluster tight, splits more aggressively); sensitivity 0.0 →
+    /// 0.9 (cluster loose, merges more aggressively).
+    var pyannoteClusterDistanceThreshold: Float {
+        Float(0.9 - sensitivity * 0.6)
+    }
+}
+
 protocol DiarizationProvider: Sendable {
+    /// Diarize with default settings. Equivalent to calling
+    /// `diarize(_:settings: DiarizationSettings())`.
     func diarize(_ audio: URL) async throws -> [DiarizedSegment]
+
+    /// Diarize with user-supplied tuning. Backends that don't
+    /// support a given knob silently ignore it.
+    func diarize(
+        _ audio: URL,
+        settings: DiarizationSettings
+    ) async throws -> [DiarizedSegment]
+}
+
+extension DiarizationProvider {
+    /// Default conformance: forward through the settings-aware
+    /// variant so a new backend only has to implement one method.
+    func diarize(_ audio: URL) async throws -> [DiarizedSegment] {
+        try await diarize(audio, settings: DiarizationSettings())
+    }
 }

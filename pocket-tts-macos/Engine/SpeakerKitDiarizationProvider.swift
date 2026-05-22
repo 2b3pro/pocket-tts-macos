@@ -17,18 +17,22 @@
 //  PLDA cluster projector). Auto-downloaded on first use via
 //  `ensureModelsReady(progress:)`.
 
+import ArgmaxCore
 import Foundation
 import SpeakerKit
 
 actor SpeakerKitDiarizationProvider: DiarizationProvider {
 
     enum ProviderError: Error, CustomStringConvertible {
+        case modelDownloadFailed(Error)
         case modelLoadFailed(Error)
         case diarizationFailed(Error)
         case audioLoadFailed(Error)
 
         var description: String {
             switch self {
+            case .modelDownloadFailed(let e):
+                return "Diarization model download failed: \(e.localizedDescription)"
             case .modelLoadFailed(let e):
                 return "Diarization model load failed: \(e.localizedDescription)"
             case .diarizationFailed(let e):
@@ -61,27 +65,67 @@ actor SpeakerKitDiarizationProvider: DiarizationProvider {
         return !entries.isEmpty
     }
 
-    /// Ensure the pyannote model bundle is downloaded and resolved.
+    /// Ensure the pyannote model bundle is downloaded AND loaded into
+    /// memory. Two-step per SpeakerKit's contract (see
+    /// `SourcePackages/checkouts/WhisperKit/Sources/SpeakerKit/
+    /// SpeakerKit.swift:34-37` for the canonical sequence):
+    ///   1. `downloadModels()` — pulls the .mlmodelc bundle from HF
+    ///      into `modelsDir` (no-op if already on disk).
+    ///   2. `loadModels()` — initializes the Core ML model instances
+    ///      from disk. Without this step, `diarize()` throws
+    ///      `SpeakerKitError.modelUnavailable("Pyannote models are
+    ///      not loaded")` at the moment of first use.
     /// Idempotent — subsequent calls after the first successful resolve
-    /// are no-ops. Progress reports during the actual download phase
-    /// (in-cache resolves report zero progress and return immediately).
+    /// are no-ops.
     func ensureModelsReady(progress: (@Sendable (Progress) -> Void)?) async throws {
         if modelsResolved, diarizer != nil { return }
 
         let kit = makeOrReuseDiarizer()
         do {
-            try await kit.downloadModels(progressCallback: progress)
+            print("[SpeakerKit] downloadModels start — base: \(modelsDir.path)")
+            // Use the no-arg variant. SpeakerKitDiarizer inherits a
+            // downloadModels(progressCallback:) overload from both
+            // ModelManager (its superclass) and the Diarizer protocol;
+            // calling the labeled form here is ambiguous to the Swift
+            // type-checker. The no-arg form goes through
+            // SpeakerKitDiarizer's own override (which forwards to the
+            // ModelManager's progressCallback variant internally with
+            // nil progress). Trade-off: we lose granular download
+            // progress on the first run. The UI shows an indeterminate
+            // "Downloading…" spinner instead. Acceptable for v1; can
+            // revisit by adding an explicit cast if/when we want the
+            // percentage back.
+            _ = progress  // unused in this path; preserved in the
+                          // signature so callers don't have to change.
+            try await kit.downloadModels()
+            print("[SpeakerKit] downloadModels complete")
+        } catch {
+            print("[SpeakerKit] downloadModels FAILED: \(error)")
+            throw ProviderError.modelDownloadFailed(error)
+        }
+        do {
+            print("[SpeakerKit] loadModels start")
+            try await kit.loadModels()
+            print("[SpeakerKit] loadModels complete")
             modelsResolved = true
         } catch {
+            print("[SpeakerKit] loadModels FAILED: \(error)")
             throw ProviderError.modelLoadFailed(error)
         }
     }
 
     func diarize(_ audio: URL) async throws -> [DiarizedSegment] {
+        try await diarize(audio, settings: DiarizationSettings())
+    }
+
+    func diarize(
+        _ audio: URL,
+        settings: DiarizationSettings
+    ) async throws -> [DiarizedSegment] {
         // Make sure models are resolved before invoking diarize. If the
         // caller already called `ensureModelsReady` this is a no-op;
-        // otherwise it downloads inline (without UI progress — caller
-        // should prefer the explicit two-phase flow).
+        // otherwise it downloads + loads inline (without UI progress —
+        // caller should prefer the explicit two-phase flow).
         try await ensureModelsReady(progress: nil)
 
         // SpeakerKit's pyannote was trained at 16 kHz. We feed it 16
@@ -91,21 +135,45 @@ actor SpeakerKitDiarizationProvider: DiarizationProvider {
         // mismatch with isolation downstream doesn't matter.
         let loaded: AudioFileLoader.LoadedAudio
         do {
+            print("[SpeakerKit] loading audio at 16kHz: \(audio.lastPathComponent)")
             loaded = try await loader.load(audio, targetSampleRate: 16_000)
+            print("[SpeakerKit] audio loaded: \(loaded.samples.count) samples, duration \(loaded.durationSec)s, isVideo: \(loaded.videoAsset != nil)")
         } catch {
+            print("[SpeakerKit] audio load FAILED: \(error)")
             throw ProviderError.audioLoadFailed(error)
         }
 
         let kit = makeOrReuseDiarizer()
 
+        // Translate the backend-agnostic settings struct into the
+        // concrete PyannoteDiarizationOptions. Pass nil when the user
+        // hasn't touched any knob — that exactly preserves the
+        // SpeakerKit-default behavior the v1 commits shipped with.
+        let options: PyannoteDiarizationOptions? = {
+            let isDefault = settings.numberOfSpeakers == nil
+                && settings.sensitivity == DiarizationSettings.defaultSensitivity
+            guard !isDefault else { return nil }
+            return PyannoteDiarizationOptions(
+                numberOfSpeakers: settings.numberOfSpeakers,
+                clusterDistanceThreshold: settings.pyannoteClusterDistanceThreshold
+            )
+        }()
+
         let result: DiarizationResult
         do {
+            if let options {
+                print("[SpeakerKit] diarize start (\(loaded.samples.count) samples @ 16kHz) — settings: numSpeakers=\(options.numberOfSpeakers.map(String.init) ?? "auto") clusterThreshold=\(options.clusterDistanceThreshold.map { String(format: "%.3f", $0) } ?? "default")")
+            } else {
+                print("[SpeakerKit] diarize start (\(loaded.samples.count) samples @ 16kHz) — settings: defaults")
+            }
             result = try await kit.diarize(
                 audioArray: loaded.samples,
-                options: nil,
+                options: options,
                 progressCallback: nil
             )
+            print("[SpeakerKit] diarize complete — \(result.speakerCount) speaker(s), \(result.segments.count) segments")
         } catch {
+            print("[SpeakerKit] diarize FAILED: \(error)")
             throw ProviderError.diarizationFailed(error)
         }
 
