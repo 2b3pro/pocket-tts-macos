@@ -94,6 +94,26 @@ actor PocketTTSVoiceEncoder {
         mimiEncoder = try MimiEncoder.load()
     }
 
+    /// Run voice_prompt_phase (Core ML) synchronously, returning the populated
+    /// KV state. Nonisolated + sync so the synchronous `prediction(from:using:)`
+    /// overload is chosen and the non-Sendable MLModel stays on the actor's
+    /// executor (no cross-isolation send). `phaseState` is freshly created here,
+    /// so returning it to the actor is region-safe.
+    private nonisolated func runVoicePhase(conditioning condArr: MLMultiArray, framesToCopy: Int) throws -> MLState {
+        guard let phase = voicePhaseModel else {
+            throw EncoderError.modelNotFound("voice_prompt_phase not loaded")
+        }
+        let lengthArr = try MLMultiArray(shape: [1], dataType: .int32)
+        lengthArr.dataPointer.assumingMemoryBound(to: Int32.self).pointee = Int32(framesToCopy)
+        let phaseState = phase.makeState()
+        let phaseInput = try MLDictionaryFeatureProvider(dictionary: [
+            "conditioning": condArr,
+            "voice_length": lengthArr,
+        ])
+        _ = try phase.prediction(from: phaseInput, using: phaseState)
+        return phaseState
+    }
+
     /// Run MimiEncoder on `samples` and copy the result into a pre-allocated MLMultiArray.
     /// All MLXArray work happens inside this nonisolated function so values never cross actor boundaries.
     private nonisolated func runMimiEncoder(
@@ -146,16 +166,11 @@ actor PocketTTSVoiceEncoder {
         // crosses the actor boundary.
         let (condArr, framesToCopy) = try runMimiEncoder(samples: samples, maxFrames: Self.tVoiceMax)
 
-        // Step 4: Run voice_prompt_phase (Core ML) → KV cache
-        let lengthArr = try MLMultiArray(shape: [1], dataType: .int32)
-        lengthArr.dataPointer.assumingMemoryBound(to: Int32.self).pointee = Int32(framesToCopy)
-
-        let phaseState = phase.makeState()
-        let phaseInput = try MLDictionaryFeatureProvider(dictionary: [
-            "conditioning": condArr,
-            "voice_length": lengthArr,
-        ])
-        _ = try await phase.prediction(from: phaseInput, using: phaseState)
+        // Step 4: Run voice_prompt_phase (Core ML) → KV cache. Done in a
+        // nonisolated sync helper (mirrors TTSEngine's model-call helpers) so the
+        // synchronous prediction overload is selected and the non-Sendable
+        // MLModel never crosses the actor boundary under strict concurrency.
+        let phaseState = try runVoicePhase(conditioning: condArr, framesToCopy: framesToCopy)
 
         // Step 5: Extract KV cache → safetensors
         try saveKVState(state: phaseState, tVoice: framesToCopy, outputURL: outputURL)
@@ -262,9 +277,12 @@ actor PocketTTSVoiceEncoder {
     // MARK: - Bundle helpers
 
     private nonisolated static func bundleURL(forResource name: String, withExtension ext: String) throws -> URL {
-        guard let url = Bundle.main.url(forResource: name, withExtension: ext) else {
+        // Resolve via ModelPaths so headless callers (CLI/daemon) can supply
+        // assets through POCKET_TTS_RESOURCES; falls back to Bundle.main.
+        do {
+            return try ModelPaths.resource(name, ext)
+        } catch {
             throw EncoderError.modelNotFound("\(name).\(ext) not in bundle")
         }
-        return url
     }
 }

@@ -369,10 +369,9 @@ extension MimiEncoder {
     nonisolated static func load() throws -> MimiEncoder {
         let model = MimiEncoder()
 
-        guard let url = Bundle.main.url(forResource: "mimi_encoder_weights", withExtension: "safetensors") else {
-            throw NSError(domain: "MimiEncoder", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "mimi_encoder_weights.safetensors not found in bundle"])
-        }
+        // Resolve via ModelPaths (POCKET_TTS_RESOURCES override → Bundle.main)
+        // so the headless CLI/daemon can supply the weights without an app bundle.
+        let url = try ModelPaths.resource("mimi_encoder_weights", "safetensors")
 
         var weights = try MLX.loadArrays(url: url)
 

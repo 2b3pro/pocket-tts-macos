@@ -63,6 +63,14 @@ nonisolated enum ModelPaths {
         try url(forResource: voiceID, withExtension: "safetensors", subdirectory: nil)
     }
 
+    /// Generic resolver (override-then-bundle) for callers outside this enum —
+    /// e.g. the voice-import path's `voice_prompt_phase.mlmodelc` and
+    /// `mimi_encoder_weights.safetensors`. Keeps every asset lookup on the same
+    /// POCKET_TTS_RESOURCES-aware path.
+    static func resource(_ name: String, _ ext: String) throws -> URL {
+        try url(forResource: name, withExtension: ext, subdirectory: nil)
+    }
+
     /// All `<id>.safetensors` files in the main bundle, sorted by id.
     /// Used by VoiceLoader to build the catalog without a hardcoded list — any
     /// voice file added at sync time shows up automatically.
