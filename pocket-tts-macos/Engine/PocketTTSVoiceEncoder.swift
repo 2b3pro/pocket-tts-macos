@@ -118,13 +118,15 @@ actor PocketTTSVoiceEncoder {
     /// All MLXArray work happens inside this nonisolated function so values never cross actor boundaries.
     private nonisolated func runMimiEncoder(
         samples: [Float],
-        maxFrames tVoiceMax: Int
+        maxFrames tVoiceMax: Int,
+        rmsTargetDB: Float = -16.0
     ) throws -> (condArr: MLMultiArray, framesToCopy: Int) {
         guard let encoder = mimiEncoder else {
             throw EncoderError.modelNotFound("MimiEncoder not loaded")
         }
-        // RMS normalize to -16 dB (matches Python _encode_audio's _normalize_audio_rms)
-        let normalized = Self.rmsNormalize(samples, targetDB: -16.0)
+        // RMS normalize the conditioning audio (default -16 dB matches Python
+        // _encode_audio's _normalize_audio_rms; caller-overridable).
+        let normalized = Self.rmsNormalize(samples, targetDB: rmsTargetDB)
         let audioMLX = MLXArray(normalized).reshaped(1, 1, normalized.count)
         let conditioning = encoder.encode(audioMLX, debug: true)
         eval(conditioning)
@@ -150,8 +152,8 @@ actor PocketTTSVoiceEncoder {
 
     // MARK: - Encode voice
 
-    func encodeVoice(wavURL: URL, outputURL: URL) async throws {
-        guard mimiEncoder != nil, let phase = voicePhaseModel else {
+    func encodeVoice(wavURL: URL, outputURL: URL, conditioningRmsDB: Float = -16.0) async throws {
+        guard mimiEncoder != nil, voicePhaseModel != nil else {
             throw EncoderError.modelNotFound("Call bootstrap() first")
         }
 
@@ -164,7 +166,7 @@ actor PocketTTSVoiceEncoder {
         // Step 2 + 3: Run MimiEncoder (MLX) → padded MLMultiArray.
         // All MLX types are created and consumed inside the nonisolated helper; no MLXArray
         // crosses the actor boundary.
-        let (condArr, framesToCopy) = try runMimiEncoder(samples: samples, maxFrames: Self.tVoiceMax)
+        let (condArr, framesToCopy) = try runMimiEncoder(samples: samples, maxFrames: Self.tVoiceMax, rmsTargetDB: conditioningRmsDB)
 
         // Step 4: Run voice_prompt_phase (Core ML) → KV cache. Done in a
         // nonisolated sync helper (mirrors TTSEngine's model-call helpers) so the

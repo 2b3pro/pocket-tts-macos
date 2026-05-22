@@ -33,8 +33,11 @@ let note: (String) -> Void = { FileHandle.standardError.write(Data(($0 + "\n").u
 let usage = """
 pockettts — headless Core ML pocket-tts
 usage:
-  pockettts say  --voice <id|imported:UUID> --text "<text>" --out <file.wav> [--resources <dir>] [--temperature <float>]
+  pockettts say  --voice <id|imported:UUID> --text "<text>" --out <file.wav> [--resources <dir>]
+                 [--temperature <f>] [--chunk-budget <int 15-50>] [--noise-clamp <f>] [--max-frames <int>]
+                 [--rms-db <target>]   # normalize output loudness to this dBFS RMS
   pockettts bake --wav <ref.wav> --out <voice_kv.safetensors> [--resources <dir>]
+                 [--rms-db <target>]   # conditioning RMS baked into the clone (default -16)
 """
 
 let sub = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""
@@ -53,8 +56,16 @@ func runSay() async {
           let outPath = argValue("--out")
     else { fail("say: missing required --voice / --text / --out") }
 
+    // Synth-time knobs (all live fields on SynthesisOptions).
     var options = SynthesisOptions()
-    if let t = argValue("--temperature"), let tv = Float(t) { options.temperature = tv }
+    if let v = argValue("--temperature"),  let f = Float(v) { options.temperature = f }
+    if let v = argValue("--chunk-budget"), let i = Int(v)   { options.chunkTokenBudget = i }
+    if let v = argValue("--noise-clamp"),  let f = Float(v) { options.noiseClamp = f }
+    if let v = argValue("--max-frames"),   let i = Int(v)   { options.maxFrames = i }
+    // Output loudness: normalize the finished audio to this RMS dBFS target.
+    // Omitted → passthrough (the bake's baked-in level). This is the lever for
+    // matching loudness across voices (e.g. council consistency).
+    let outputRmsDB: Float? = argValue("--rms-db").flatMap(Float.init)
 
     do {
         let tInit = Date()
@@ -70,6 +81,12 @@ func runSay() async {
         }
         let totalMs = Date().timeIntervalSince(tSynth) * 1000
         guard !samples.isEmpty else { fail("synthesis produced no audio (voice '\(voice)' not found, or no frames)", code: 1) }
+
+        if let target = outputRmsDB {
+            let before = rmsDB(samples)
+            samples = normalizeRMS(samples, targetDB: target)
+            note(String(format: "[pockettts] output RMS: %.1f dB → %.1f dB", before, target))
+        }
 
         try WAVEncoder.write(samples: samples, to: URL(fileURLWithPath: outPath))
         let audioSec = Double(samples.count) / 24_000.0
@@ -90,6 +107,10 @@ func runBake() async {
 
     guard FileManager.default.fileExists(atPath: wav) else { fail("bake: input WAV not found: \(wav)", code: 1) }
 
+    // Conditioning RMS target baked into the clone. Default -16 dB matches the
+    // app / Python reference; lower (e.g. -20) bakes a quieter-conditioned voice.
+    let condRmsDB = argValue("--rms-db").flatMap(Float.init) ?? -16.0
+
     let enc = PocketTTSVoiceEncoder()
     let tBoot = Date()
     await enc.bootstrap()
@@ -99,12 +120,33 @@ func runBake() async {
 
     do {
         let tEnc = Date()
-        try await enc.encodeVoice(wavURL: URL(fileURLWithPath: wav), outputURL: URL(fileURLWithPath: outPath))
-        note(String(format: "[pockettts] bake: %.0f ms", Date().timeIntervalSince(tEnc) * 1000))
+        try await enc.encodeVoice(wavURL: URL(fileURLWithPath: wav), outputURL: URL(fileURLWithPath: outPath), conditioningRmsDB: condRmsDB)
+        note(String(format: "[pockettts] bake: %.0f ms (cond RMS %.0f dB)", Date().timeIntervalSince(tEnc) * 1000, condRmsDB))
         note("[pockettts] wrote \(outPath)")
     } catch {
         fail("bake failed: \(error)", code: 1)
     }
+}
+
+// MARK: - RMS helpers (output loudness normalization)
+
+func rmsDB(_ samples: [Float]) -> Float {
+    guard !samples.isEmpty else { return -.infinity }
+    var sumSq: Double = 0
+    for s in samples { sumSq += Double(s) * Double(s) }
+    let rms = (sumSq / Double(samples.count)).squareRoot()
+    return rms > 0 ? 20 * Float(log10(rms)) : -.infinity
+}
+
+/// Scale `samples` so their RMS hits `targetDB` dBFS, then peak-limit to avoid
+/// clipping (scales the whole buffer down if the gain would push peaks > 1.0).
+func normalizeRMS(_ samples: [Float], targetDB: Float) -> [Float] {
+    let current = rmsDB(samples)
+    guard current.isFinite else { return samples }
+    var gain = pow(10, (targetDB - current) / 20)
+    let peak = samples.reduce(0) { max($0, abs($1)) }
+    if peak * gain > 1.0 { gain = 1.0 / peak }   // peak guard
+    return samples.map { $0 * gain }
 }
 
 // MARK: - Dispatch
