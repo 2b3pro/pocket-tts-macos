@@ -26,13 +26,16 @@ to a flat ~0.26s start, regardless of length.
 | **P1** | `pockettts say` — headless Core ML synth → WAV | ✅ done | `a9208e6` |
 | **P2** | `pockettts bake` — WAV → KV-state clone (MLX) | ✅ done | `e3ecb4d` |
 | **P2.5** | Expose synth knobs + bake/output loudness controls | ✅ done | `8bb9149` |
-| **P3** | Persistent HTTP streaming daemon (inference-only, MLX-free) | ✅ done | `headless-daemon` |
-| **P4** | VoiceServer `pocket.ts` `generateStream()` + re-bake personas | ⬜ todo | — |
+| **P3** | Persistent HTTP streaming daemon (inference-only, MLX-free) | ✅ done | `b2a4eb0` |
+| **P4** | Re-bake all bakeable persona clones (73) | ✅ done | (batch, PAI side) |
+| **P4d** | VoiceServer `pocket.ts` → daemon + lifecycle + council leveling | ✅ done | PAI `4f8d40d` `891bb50` `a4b75a9` |
 
 Verified perf (release, M2 Ultra, warm, vs `/Applications` app assets):
 **~0.26s first-audio, ~30 fps, 2.4× realtime.** Headless bake is byte-format
 identical to the app's Voice Manager bake (12 tensors `kv_k/kv_v_0..5`,
-`[1,512,16,64]` F16; verified on matias, `T_voice=188`).
+`[1,512,16,64]` F16; verified on matias, `T_voice=188`). P4d end-to-end through
+VoiceServer: nova streams from its baked clone at ~0.55s first-audio (full Node
+→ daemon → synth stack); buffered council generate normalizes to −20.00 dBFS.
 
 ## Architecture
 
@@ -155,14 +158,51 @@ buffered −21.8 dBFS at target −20.
 ## Loudness model
 
 Two levers. **Bake-time** `--rms-db` sets the conditioning level baked into the
-clone (default −16 dB = app/Python parity). **Output-time** `say --rms-db` is the
-council-consistency lever — normalizes finished audio so every advisor sits at
-the same level regardless of how its clone was made. Council standard:
-`tts.targetRmsDb: -20` in AdvisoriumPAI `advisorium.yaml` (consumed by the P4
-daemon path; the `say --rms-db` mechanism is already proven).
+clone (default −16 dB = app/Python parity). All 73 PAI clones were baked at this
+**−16 default** (the matias-validated level), *not* −20 — conditioning is a
+per-clone character setting, and conflating it with loudness leveling would be an
+unvalidated change to every voice. **Output-time** is the council-consistency
+lever: the daemon's `stream:false` mode normalizes finished audio to
+`targetRmsDb` so every advisor sits at the same level regardless of how its clone
+was made. Council standard: `tts.targetRmsDb: -20` in AdvisoriumPAI
+`advisorium.yaml`, sent per-request via the VoiceServer `/notify` `target_rms_db`
+field → daemon. Verified end-to-end at −20.00 dBFS.
 
 Internal constants not yet exposed: bake 15s reference cap, EOS smoothing
 (`eosLogitThreshold -4.0`, 3 consecutive frames).
+
+## PAI integration (P4 / P4d)
+
+How the daemon is actually deployed in PAI (lives in the `pai` repo, not here):
+
+- **Stable binary install** — the release binary is self-contained (MLX is
+  statically linked; `otool -L` shows only system frameworks, no `@rpath`/`.build`
+  deps), so it relocates cleanly off the build volume. It's installed to
+  `~/Library/Application Support/pai/pocket-coreml-bin/pockettts` (+ the
+  `mlx-swift_Cmlx.bundle` metallib alongside, so `bake` works there too — `serve`
+  doesn't need it). `start.sh` refreshes it from this build dir when newer.
+- **Daemon resources dir** — `~/Library/Application Support/pai/pocket-coreml-res/`:
+  symlinks to the app's `.mlmodelc` models + tokenizer + stock voices, plus **73
+  baked clone KV safetensors** (every persona with a `*sample*` source WAV;
+  conditioning −16). The daemon runs `serve --resources <that dir>`; it loads all
+  voices at startup (~4–5s cold with the full set), so a newly-baked clone needs a
+  daemon restart.
+- **VoiceServer routing** (`Infrastructure/VoiceServer/engines/pocket.ts`) — the
+  `pocket` engine prefers the daemon and keeps the Python `pocket-tts` path as
+  fallback. `generateStream()` streams from the daemon for baked voices (else
+  throws → queue falls back); `generate()` collects daemon PCM→WAV (buffered,
+  `stream:false`, honors `targetRmsDb`); `ensureRunning()` lazy-starts the daemon
+  (PID file + crash-window cap + health poll). `start.sh` also eager-starts it.
+  Voices resolve **by basename** — a config value of `nova.safetensors` (or any
+  path) → token `nova` → the daemon's baked Core ML clone. `X-Voice-Fallback` is
+  treated as a miss so the Python path (which still has the original
+  `export-voice` clone) is used. **Result: no clone files were replaced in place —
+  the old Python `.safetensors` stay as fallback; the daemon serves its own Core
+  ML copies under matching basenames.**
+- **Persona creation** — `AdvisoriumPAI/workflows/persona-creator-flow.md` now
+  bakes a Core ML KV clone (`pockettts bake` → daemon resources dir, basename
+  matching the config) so new advisors are daemon-visible; the Python
+  `export-voice` clone is kept as an optional fallback.
 
 ## Gotchas / lessons
 
@@ -181,19 +221,19 @@ Internal constants not yet exposed: bake 15s reference cap, EOS smoothing
 
 ## Remaining work
 
-- **P4 — VoiceServer:** `Infrastructure/VoiceServer/engines/pocket.ts` gets
-  `generateStream()` talking to the daemon (POST `/generate`, read `resp.body` as
-  a PCM stream, `X-Sample-Rate` header — same shape as `mlx.ts`
-  `generateStreamViaServer`); re-bake the 6 persona clones from
-  `AdvisoriumPAI/voices/*.wav` into the daemon's resources dir at conditioning
-  −20; council turns POST `stream:false` + `targetRmsDb` from `advisorium.yaml`;
-  Python `pocket-tts serve` stays as fallback.
+- **Council leveling — caller side:** AdvisoriumPAI council turns must actually
+  *send* `target_rms_db` (from `advisorium.yaml tts.targetRmsDb`) in their
+  VoiceServer `/notify` payload. The VoiceServer is wired to honor it end-to-end,
+  but the council caller doesn't pass it yet.
+- **Re-bake the rest:** 4 recoverable clones (sources exist but aren't named
+  `*sample*` — `ian.wav`, `monologue.wav`/rousseau, `dalio-voice.wav`, and the
+  misspelled `jordanpederson-sample.wav`) and 6 with no source audio yet
+  (ingo-swann, anne-applebaum, elias-aguilar, giordano-bruno, isaac-luria,
+  edgar-cayce). Bake into the daemon resources dir once sources are ready.
 - **Verify app still builds in Xcode** after the shared-file edits (additive, but
   not yet re-confirmed via `xcodebuild`).
-- Decide how to ship the metallib for distribution (vs copy-from-app).
-- **Daemon lifecycle** for P4: a start/stop/health-restart wrapper (mirror
-  `mlx.ts`'s `startMlxServer`/`ensureServerOrRestart` PID-file pattern) so
-  VoiceServer can bring the daemon up on demand and survive crashes.
+- Decide how to ship the metallib for distribution (vs copy-from-app / the
+  install-alongside approach PAI uses).
 
 ## Related (PAI side)
 
