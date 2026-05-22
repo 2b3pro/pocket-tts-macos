@@ -93,7 +93,7 @@ nonisolated struct SentencePieceTokenizer: Tokenizer {
     let subSentenceBoundaryTokenIDs: Set<Int32>
 
     init() throws {
-        guard let url = Bundle.main.url(forResource: "tokenizer_vocab", withExtension: "json") else {
+        guard let url = try? ModelPaths.tokenizerVocab() else {
             throw LoadError.vocabMissing
         }
         do {

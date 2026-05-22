@@ -51,6 +51,13 @@ nonisolated enum ModelPaths {
         try url(forResource: "tokenizer", withExtension: "model", subdirectory: nil)
     }
 
+    /// Exported SentencePiece vocab (pieces + scores). Resolved through the
+    /// same override-then-bundle path as everything else so headless callers
+    /// (the CLI / daemon) can supply assets via POCKET_TTS_RESOURCES.
+    static func tokenizerVocab() throws -> URL {
+        try url(forResource: "tokenizer_vocab", withExtension: "json", subdirectory: nil)
+    }
+
     /// URL for one voice's KV state safetensors file.
     static func voiceKVState(voiceID: String) throws -> URL {
         try url(forResource: voiceID, withExtension: "safetensors", subdirectory: nil)
@@ -60,19 +67,49 @@ nonisolated enum ModelPaths {
     /// Used by VoiceLoader to build the catalog without a hardcoded list — any
     /// voice file added at sync time shows up automatically.
     static func allVoiceKVStateFiles() throws -> [URL] {
+        // Filter out non-voice safetensors (model weights, not voice KV states)
+        let nonVoicePrefixes = ["lavasr", "mimi_encoder"]
+        let isVoice: (URL) -> Bool = { url in
+            url.pathExtension == "safetensors"
+                && !nonVoicePrefixes.contains { url.lastPathComponent.hasPrefix($0) }
+        }
+
+        if let dir = overrideResourcesDir {
+            let contents = (try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: nil)) ?? []
+            let voices = contents.filter(isVoice)
+            if !voices.isEmpty {
+                return voices.sorted { $0.lastPathComponent < $1.lastPathComponent }
+            }
+        }
+
         guard let urls = Bundle.main.urls(forResourcesWithExtension: "safetensors", subdirectory: nil) else {
             throw LookupError.voiceDirectoryMissing
         }
-        // Filter out non-voice safetensors (model weights, not voice KV states)
-        let nonVoicePrefixes = ["lavasr", "mimi_encoder"]
-        return urls
-            .filter { name in !nonVoicePrefixes.contains { name.lastPathComponent.hasPrefix($0) } }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        return urls.filter(isVoice).sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
     // MARK: Private
 
+    /// Optional asset directory supplied via the `POCKET_TTS_RESOURCES`
+    /// environment variable. When set (and the file exists), lookups resolve
+    /// against this directory BEFORE falling back to `Bundle.main`. This is how
+    /// headless callers — the CLI and the streaming daemon — feed the engine the
+    /// `.mlmodelc` / tokenizer / voice KV assets without an app bundle. The app
+    /// itself never sets the variable, so its behavior is unchanged.
+    private static let overrideResourcesDir: URL? = {
+        guard let p = ProcessInfo.processInfo.environment["POCKET_TTS_RESOURCES"],
+              !p.isEmpty else { return nil }
+        return URL(fileURLWithPath: p, isDirectory: true)
+    }()
+
     private static func url(forResource name: String, withExtension ext: String, subdirectory: String?) throws -> URL {
+        if let dir = overrideResourcesDir {
+            let candidate = dir.appendingPathComponent("\(name).\(ext)")
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
         if let u = Bundle.main.url(forResource: name, withExtension: ext, subdirectory: subdirectory) {
             return u
         }
