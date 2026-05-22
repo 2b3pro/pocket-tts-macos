@@ -7,7 +7,9 @@ bottleneck between us and Kyutai.** Watch the macOS app repo closely; treat
 Kyutai itself as a low-frequency, lagging signal.
 
 > Status snapshot (2026-05-22): this fork is **0 commits behind**
-> `slaughters85j/pocket-tts-macos`. The conversion repo is **404 / private**.
+> `slaughters85j/pocket-tts-macos`. The conversion repo is **404 / private** — but
+> the source model + public `pocket_tts` package are on disk, so most of John's
+> weight work is reproducible (see "Can we reproduce John's weight work?" below).
 
 ## Dependency chain
 
@@ -79,16 +81,51 @@ the least likely layer to need updates** — realistic future improvement comes
 from the pocket-tts model (quality/speed) or John's conversion precision, far
 more than from the codec.
 
+## Can we reproduce John's weight work? (investigated 2026-05-22)
+
+Mostly **yes** — the private conversion repo is far less of a chokepoint than it
+first appears, because the *source* model and the public `pocket_tts` package are
+both already on disk. Split the work into the three weight artifacts:
+
+| What | Reproducible? | Why |
+|------|---------------|-----|
+| **Per-voice bake conditioning** | ✅ already own it | `vocalize bake` (Swift MLX MimiEncoder) makes it locally; `scripts/encode_voice_conditioning.py` is a second, independent PyTorch path from the public model. No John dependency. |
+| **`mimi_encoder_weights.safetensors`** | ✅ fully unblocked | Public model cached locally + known target key-scheme (`MimiEncoder.load()` renames) + parity validator (`scripts/validate_mimi_encoder.py`). ~half-day script. |
+| **3 inference `.mlpackage`** (`calm_stateful`, `prompt_phase`, `mimi_stateful`) | ⚠️ effortful, not blocked | Public PyTorch source + public `coremltools` + documented precision strategy, but we'd re-implement John's stateful-conversion pipeline from scratch (days). Only needed for a *new* Kyutai checkpoint. |
+
+**Evidence (all local / public):**
+
+- **Base model is public + cached:** `kyutai/pocket-tts-without-voice-cloning` →
+  `~/.cache/huggingface/hub/models--kyutai--pocket-tts-without-voice-cloning/.../tts_b6369a24.safetensors`
+  (463 MB, variant `b6369a24`). (A gated `kyutai/pocket-tts` also exists — line 58
+  of `pocket_tts/models/tts_model.py` notes it needs accepting terms — but the
+  cached `-without-voice-cloning` variant is what loads.)
+- **Public package on disk:** `/Volumes/Xarismata/Projects/pocket-tts`
+  (`2b3pro/pocket-tts`). `TTSModel.load_model(variant="b6369a24")` loads the
+  cached weights with no private repo.
+- **Mimi is just submodules on that model:** `mimi.encoder.model`,
+  `mimi.encoder_transformer`, `mimi._to_framerate`, `tts.flow_lm.speaker_proj_weight`.
+- **Reference + validator ship locally:** `scripts/encode_voice_conditioning.py`,
+  `scripts/validate_mimi_encoder.py` (emit stage-by-stage parity tensors).
+
+> The `pocket-tts-core-ml-conversion` private repo only really gates artifact ③
+> (the stateful Core ML conversion *scripts*) — not the weights themselves.
+
 ## Supply-chain risk
 
-The conversion repo being private makes **John Saunders the single point of
-dependency**. If he stops maintaining `pocket-tts-macos`, we have no public path
-to re-convert a new Kyutai checkpoint ourselves — we'd be frozen on the current
-`.mlpackage` set. Mitigations worth keeping current:
+The real exposure is narrower than "John is a single point of dependency": it's
+specifically **the `.mlpackage` stateful-conversion pipeline** (artifact ③). If
+John stops maintaining `pocket-tts-macos` *and* Kyutai ships a new checkpoint,
+we'd need to re-implement that conversion ourselves (feasible — see table above —
+but days of `coremltools` work). Everything else we can already regenerate.
+
+Mitigations worth keeping current:
 
 - Keep the v1.2 release `.app` archived (it carries all model assets — see
   [HEADLESS_DAEMON.md](./HEADLESS_DAEMON.md)). HF `slaughters85j/pocket-tts-coreml`
   mirrors the four mlpackages as backup.
+- Keep the cached `kyutai/pocket-tts-without-voice-cloning` snapshot (the PyTorch
+  source for any future re-conversion) — don't let it get pruned.
 - If the conversion repo ever goes public again, clone it immediately.
 
 ## Checking drift
