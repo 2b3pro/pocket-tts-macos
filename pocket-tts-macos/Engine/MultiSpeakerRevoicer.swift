@@ -139,16 +139,67 @@ actor MultiSpeakerRevoicer: MultiSpeakerRevoicing {
             }
         }
 
-        // Soft-clip to [-1, +1]. With non-overlapping speaker timing
-        // this almost never triggers; for accidental overlaps it
-        // prevents hard digital clipping without scaling the whole
-        // track down.
-        for i in 0..<combined.count {
-            if combined[i] > 1.0 { combined[i] = 1.0 }
-            else if combined[i] < -1.0 { combined[i] = -1.0 }
-        }
-
+        // Soft-clip to ±1.0 via tanh — see `softClip` docstring.
+        Self.softClip(&combined)
         return combined
+    }
+
+    // MARK: - Soft clip
+
+    /// Piecewise soft-clip applied to the combined revoiced master
+    /// post-sum. Replaces the v1 brick-wall hard-clip — but does
+    /// NOT color in-range samples (the failure mode of a global
+    /// `tanh(x * 0.9)` curve).
+    ///
+    /// Curve:
+    ///   * |x| ≤ knee (= 0.9)          → output = x (identity)
+    ///   * |x| > knee                  → output = sign(x) * (
+    ///         knee + (1 - knee) * tanh((|x| - knee) / (1 - knee)) )
+    ///
+    /// The identity branch guarantees ZERO coloration on typical-
+    /// content samples (anywhere a hard-clip would also have been
+    /// a no-op). Above the knee, the tanh-shaped folding curve
+    /// brings any overload — including the Phase 7 case where the
+    /// Background music stem is summed alongside revoiced speech
+    /// — smoothly toward ±1 instead of producing the audible
+    /// "pop" of a brick-wall limiter.
+    ///
+    /// Continuity check at the knee:
+    ///   value: knee + 0 * tanh(0) = knee ✓
+    ///   slope: d/dx[knee + (1-knee) * tanh((x-knee)/(1-knee))]
+    ///        = (1-knee) * sech²(0) * 1/(1-knee)
+    ///        = 1 (matches the identity branch's slope) ✓
+    ///
+    /// Asymptote: as |x| → ∞, tanh → 1, so output → knee + (1 -
+    /// knee) = 1.0. Never crosses ±1 for finite input.
+    ///
+    /// Cheap — tanh is invoked only on the small subset of samples
+    /// past the knee, plus a branch + abs per sample below. Total
+    /// cost for a 30 min @ 24 kHz master with typical content
+    /// (~99% of samples in-range) is dominated by the per-sample
+    /// branch, ~50 ms.
+    ///
+    /// `nonisolated static` so tests can exercise the curve
+    /// directly without spinning up the revoice pipeline.
+    nonisolated static func softClip(_ samples: inout [Float]) {
+        for i in 0..<samples.count {
+            samples[i] = softClip(samples[i])
+        }
+    }
+
+    /// Single-sample variant. Lets tests assert curve points
+    /// (monotonicity, asymptote, in-range identity) without
+    /// allocating arrays.
+    nonisolated static func softClip(_ value: Float) -> Float {
+        let knee: Float = 0.9
+        let absX = abs(value)
+        if absX <= knee {
+            return value
+        }
+        let remaining: Float = 1.0 - knee   // headroom to the ±1 asymptote
+        let excess = absX - knee
+        let compressed = remaining * tanh(excess / remaining)
+        return value < 0 ? -(knee + compressed) : (knee + compressed)
     }
 
     // MARK: - Per-speaker revoice

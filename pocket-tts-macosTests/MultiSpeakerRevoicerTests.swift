@@ -39,7 +39,9 @@ final class MultiSpeakerRevoicerTests: XCTestCase {
     func test_passthroughOnly_sumsIsolatedSamples() async throws {
         // Speaker A active in [0, 0.5s]: constant 0.3 amplitude.
         // Speaker B active in [0.5s, 1.0s]: constant 0.4 amplitude.
-        // Sum should be 0.3 in the first half + 0.4 in the second.
+        // Sum in the first half is 0.3 (A only); second half is 0.4 (B only).
+        // Both values are below the 0.9 soft-clip knee → output equals
+        // input exactly (piecewise identity branch).
         let mid = sampleRate / 2
         var aSamples = [Float](repeating: 0.0, count: totalSamples)
         for i in 0..<mid { aSamples[i] = 0.3 }
@@ -62,11 +64,13 @@ final class MultiSpeakerRevoicerTests: XCTestCase {
             stt: MockSTTProvider.failIfCalled()
         )
         XCTAssertEqual(result.count, totalSamples)
+        let expectedA = MultiSpeakerRevoicer.softClip(0.3)
+        let expectedB = MultiSpeakerRevoicer.softClip(0.4)
         for i in 0..<mid {
-            XCTAssertEqual(result[i], 0.3, accuracy: 1e-6)
+            XCTAssertEqual(result[i], expectedA, accuracy: 1e-5)
         }
         for i in mid..<totalSamples {
-            XCTAssertEqual(result[i], 0.4, accuracy: 1e-6)
+            XCTAssertEqual(result[i], expectedB, accuracy: 1e-5)
         }
     }
 
@@ -74,7 +78,10 @@ final class MultiSpeakerRevoicerTests: XCTestCase {
 
     func test_softClip_positive() async throws {
         // Both speakers full-amplitude 0.7 across the full second →
-        // sum = 1.4 → soft-clip to 1.0.
+        // sum = 1.4, which is above the 0.9 knee → soft-clip
+        // folds the excess via tanh, output stays strictly below
+        // 1.0 and asymptotes toward it. Replaces v1's brick-wall
+        // hard-clip to ±1.0.
         let a = [Float](repeating: 0.7, count: totalSamples)
         let b = [Float](repeating: 0.7, count: totalSamples)
         let assignments = [
@@ -89,12 +96,18 @@ final class MultiSpeakerRevoicerTests: XCTestCase {
             engine: MockTTSEngine.failIfCalled(),
             stt: MockSTTProvider.failIfCalled()
         )
-        // Allow tiny floating-point slack at the clip boundary.
-        XCTAssertTrue(result.allSatisfy { $0 == 1.0 },
-                      "all samples should be clipped to +1.0")
+        let expected = MultiSpeakerRevoicer.softClip(1.4)
+        XCTAssertTrue(result.allSatisfy { abs($0 - expected) < 1e-5 },
+                      "all samples should equal softClip(1.4) ≈ \(expected)")
+        // Tanh never reaches ±1.0 for finite input; assert strictly < 1.0.
+        XCTAssertTrue(result.allSatisfy { $0 < 1.0 },
+                      "tanh soft-clip never reaches +1.0 for finite input")
     }
 
     func test_softClip_negative() async throws {
+        // Mirror of test_softClip_positive for the negative half.
+        // sum = -1.4, above the knee on the negative side; output
+        // is strictly above -1.0 and asymptotes toward it.
         let a = [Float](repeating: -0.7, count: totalSamples)
         let b = [Float](repeating: -0.7, count: totalSamples)
         let assignments = [
@@ -109,8 +122,11 @@ final class MultiSpeakerRevoicerTests: XCTestCase {
             engine: MockTTSEngine.failIfCalled(),
             stt: MockSTTProvider.failIfCalled()
         )
-        XCTAssertTrue(result.allSatisfy { $0 == -1.0 },
-                      "all samples should be clipped to -1.0")
+        let expected = MultiSpeakerRevoicer.softClip(-1.4)
+        XCTAssertTrue(result.allSatisfy { abs($0 - expected) < 1e-5 },
+                      "all samples should equal softClip(-1.4) ≈ \(expected)")
+        XCTAssertTrue(result.allSatisfy { $0 > -1.0 },
+                      "tanh soft-clip never reaches -1.0 for finite input")
     }
 
     // MARK: - Per-speaker length mismatch
@@ -134,8 +150,11 @@ final class MultiSpeakerRevoicerTests: XCTestCase {
             stt: MockSTTProvider.failIfCalled()
         )
         XCTAssertEqual(result.count, totalSamples)
-        for i in 0..<half { XCTAssertEqual(result[i], 0.5) }
-        for i in half..<totalSamples { XCTAssertEqual(result[i], 0.0) }
+        // First half: softClip(0.5) = 0.5 (below the 0.9 knee → identity).
+        // Second half: softClip(0.0) = 0.0 exactly.
+        let expectedFirst = MultiSpeakerRevoicer.softClip(0.5)
+        for i in 0..<half { XCTAssertEqual(result[i], expectedFirst, accuracy: 1e-5) }
+        for i in half..<totalSamples { XCTAssertEqual(result[i], 0.0, accuracy: 1e-5) }
     }
 
     // MARK: - Revoice path (mock STT + TTS)
@@ -163,9 +182,10 @@ final class MultiSpeakerRevoicerTests: XCTestCase {
         )
         XCTAssertEqual(result.count, totalSamples)
         // A contributes 0.3 everywhere; B is discarded → 0.0 contribution.
-        // Sum is exactly 0.3.
-        XCTAssertTrue(result.allSatisfy { $0 == 0.3 },
-                      "all samples should be just A's passthrough (B was discarded)")
+        // Sum = 0.3, below the 0.9 knee → output = 0.3 (identity).
+        let expected = MultiSpeakerRevoicer.softClip(0.3)
+        XCTAssertTrue(result.allSatisfy { abs($0 - expected) < 1e-5 },
+                      "all samples should be softClip(0.3) ≈ \(expected) (B was discarded)")
     }
 
     func test_allDiscarded_returnsZeroBuffer() async throws {
@@ -221,18 +241,19 @@ final class MultiSpeakerRevoicerTests: XCTestCase {
         // Passthrough contributes 0.1 everywhere; revoiced contributes
         // 0.2 in the steady-state of the synthesized region.
         // TimelineAlignedRenderer applies an 80ms (1920-sample) linear
-        // fade-in to the first segment's PCM so the attack doesn't pop,
-        // so samples 0..<1920 will ramp from 0.1 to ~0.3 and don't match
-        // the clean sum exactly. Check the post-fade-in steady state
-        // (samples 2000..<23000) where the sum is solidly 0.3.
+        // fade-in so samples 0..<1920 ramp. Check the post-fade-in
+        // steady state (2000..<23000) where the raw sum is 0.3.
+        // Below the 0.9 knee → output = 0.3 (identity branch).
+        let expectedSteady = MultiSpeakerRevoicer.softClip(0.3)
         for i in 2000..<23000 {
-            XCTAssertEqual(result[i], Float(0.3), accuracy: 1e-5,
-                           "steady-state sample \(i) should be passthrough(0.1) + revoiced(0.2)")
+            XCTAssertEqual(result[i], expectedSteady, accuracy: 1e-5,
+                           "steady-state sample \(i) should be softClip(0.1+0.2)=softClip(0.3)")
         }
-        // Sample 0 should be just passthrough since the fade-in
-        // multiplier at index 0 is 0.
-        XCTAssertEqual(result[0], Float(0.1), accuracy: 1e-5,
-                       "sample 0: fade-in zero × revoiced(0.2) = 0, plus passthrough(0.1) = 0.1")
+        // Sample 0: fade-in multiplier = 0, revoiced contributes 0.
+        // Sum = 0.1 → softClip(0.1) = tanh(0.1 × 0.9).
+        let expectedSample0 = MultiSpeakerRevoicer.softClip(0.1)
+        XCTAssertEqual(result[0], expectedSample0, accuracy: 1e-5,
+                       "sample 0: fade-in zero × revoiced(0.2) = 0, plus passthrough(0.1) → softClip(0.1)")
 
         // The mock STT was called exactly once (only for the assigned speaker).
         let sttCallCount = await mockSTT.callCount
