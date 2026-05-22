@@ -149,8 +149,11 @@ No pre-archive strip step. Verify by listing `.app/Contents/Resources/*.safetens
 | Project | Role |
 |---------|------|
 | [pocket-tts](https://github.com/slaughters85j/pocket-tts) | Original Python/Electron app — reference implementation |
-| [pocket-tts-core-ml-conversion](https://github.com/slaughters85j/pocket-tts-core-ml-conversion) | Core ML conversion scripts, validators, Swift CLI harness |
+| [pocket-tts-core-ml-conversion](https://github.com/slaughters85j/pocket-tts-core-ml-conversion) | Core ML conversion scripts, validators, Swift CLI harness — **currently private/404** |
 | [mlx-audio-swift (fork)](https://github.com/slaughters85j/mlx-audio-swift) | Forked to expose Fish S2 Pro codec + refCodes API |
+
+For provenance, the upstream-update watch list, and supply-chain notes, see
+[docs/UPSTREAM.md](docs/UPSTREAM.md).
 
 ## Authors
 
