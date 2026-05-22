@@ -4,6 +4,10 @@ Single-shot context for any Claude Code session working in this repo. Read first
 
 > **Note:** This file is intentionally checked in (no symlink trick) so the project is self-contained for fresh sessions.
 
+> **Headless build:** there's a `swift build` CLI/daemon track (branch `headless-daemon`)
+> that links the UI-free `Engine/` + `Audio/` sources to run the Core ML engine without
+> the GUI — for PAI's VoiceServer. See [`docs/HEADLESS_DAEMON.md`](docs/HEADLESS_DAEMON.md).
+
 ---
 
 ## Project Overview
