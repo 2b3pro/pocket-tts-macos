@@ -26,7 +26,7 @@ to a flat ~0.26s start, regardless of length.
 | **P1** | `pockettts say` — headless Core ML synth → WAV | ✅ done | `a9208e6` |
 | **P2** | `pockettts bake` — WAV → KV-state clone (MLX) | ✅ done | `e3ecb4d` |
 | **P2.5** | Expose synth knobs + bake/output loudness controls | ✅ done | `8bb9149` |
-| **P3** | Persistent HTTP streaming daemon (inference-only, MLX-free) | ⬜ todo | — |
+| **P3** | Persistent HTTP streaming daemon (inference-only, MLX-free) | ✅ done | `headless-daemon` |
 | **P4** | VoiceServer `pocket.ts` `generateStream()` + re-bake personas | ⬜ todo | — |
 
 Verified perf (release, M2 Ultra, warm, vs `/Applications` app assets):
@@ -77,10 +77,64 @@ RES=/Applications/pocket-tts-macos.app/Contents/Resources
 
 # Bake a clone from a reference WAV
 .build/release/pockettts bake --wav ref.wav --out voice_kv.safetensors --resources "$RES"
+
+# Run the persistent streaming daemon (inference-only — no metallib needed)
+.build/release/pockettts serve --port 8891 --resources "$RES"
 ```
 
 To synthesize with a freshly baked clone, drop it into a resources dir
 (symlink the app's models + your `<name>.safetensors`) and `say --voice <name>`.
+The daemon loads voices into memory once at startup, so a newly-added clone
+needs a daemon restart to become available.
+
+## Daemon (P3) — HTTP contract
+
+`pockettts serve` keeps the engine resident (init ~2.2s cold, then warm) and
+serves a contract that mirrors PAI's `mlx-server.py` so VoiceServer's engine
+client treats it identically. Default port **8891** (8888 voice / 8889 mlx /
+8890 Python pocket / **8891 Core ML pocket daemon**). Loopback-bound,
+unauthenticated, one request at a time (a `GenerationGate` serializes synthesis
+— Core ML AR state is per-call, but we don't risk concurrent prediction).
+
+| Route | Method | Returns |
+|-------|--------|---------|
+| `/health` | GET | JSON `{status, engine, pid, uptime_ms, generations_served, sample_rate}` |
+| `/generate` | POST | 16-bit LE mono PCM (see below) |
+| `/shutdown` | POST | `{ok:true}`, then `exit(0)` |
+
+`/generate` request body (JSON):
+
+```jsonc
+{ "text": "…",                    // required
+  "voice": "matias",              // built-in | clone basename | imported:UUID | <path>.safetensors
+  "stream": true,                 // false → buffer + normalize
+  "targetRmsDb": -20,             // output RMS target — buffered mode only
+  "temperature": 0.7, "chunkTokenBudget": 50,
+  "noiseClamp": 1.5, "maxFrames": 256, "framesAfterEos": 8,
+  "request_id": "…" }
+```
+
+Response headers (both modes): `Content-Type: audio/l16; rate=24000; channels=1`,
+`X-Sample-Rate`, `X-Channels`, `X-Bits-Per-Sample`, `X-Estimated-Duration-Ms`,
+`X-RMS-Mode`, plus `X-Request-Id` / `X-Voice-Fallback` when applicable. Unknown
+non-built-in voices fall back to `marius` with `X-Voice-Fallback: default`.
+
+**Two response modes (the streaming/RMS resolution):**
+
+- `stream:true` (default) — `Transfer-Encoding: chunked`; each 80 ms PCM frame is
+  flushed to the socket as the AR loop produces it. `X-RMS-Mode:
+  stream-passthrough` — `targetRmsDb` is ignored (RMS over a partial signal is
+  meaningless). This is the **solo** path (`advisorium.yaml streamSolo:true`):
+  single voice, lowest first-audio latency, no cross-leveling needed.
+- `stream:false` — buffers the whole utterance, optionally normalizes to
+  `targetRmsDb`, sends with `Content-Length`. `X-RMS-Mode: full-normalized` (or
+  `buffered`). This is the **council** path (`streamCouncil:false`) where
+  cross-voice loudness leveling matters more than first-audio latency.
+
+Normalization is peak-guarded: a buffer whose crest factor would clip at the
+target lands a little under it (e.g. target −20 → −21.8 dBFS at 0 dBFS peak)
+rather than clipping. Verified live: marius streaming −32.8 dBFS passthrough vs
+buffered −21.8 dBFS at target −20.
 
 ## CLI reference
 
@@ -93,6 +147,10 @@ To synthesize with a freshly baked clone, drop it into a resources dir
 
 `bake` — `--wav`, `--out`, `--resources`
 - `--rms-db <target>` (default −16) — **conditioning** RMS baked into the clone
+
+`serve` — `--port <int>` (default 8891), `--resources <dir>`
+- Persistent streaming daemon. See "Daemon (P3) — HTTP contract" above. The full
+  synth knob set + `targetRmsDb` are per-request JSON fields, not CLI flags.
 
 ## Loudness model
 
@@ -123,15 +181,19 @@ Internal constants not yet exposed: bake 15s reference cap, EOS smoothing
 
 ## Remaining work
 
-- **P3 — daemon:** persistent HTTP server, models resident (init ~0.25s once),
-  POST `/generate` returning chunked PCM + `x-sample-rate`, carrying the full
-  synth knob set + per-request `targetRmsDb`. Mirror PAI's `mlx-server.py` contract.
 - **P4 — VoiceServer:** `Infrastructure/VoiceServer/engines/pocket.ts` gets
-  `generateStream()` talking to the daemon; re-bake the 6 persona clones from
-  `AdvisoriumPAI/voices/*.wav`; Python `pocket-tts serve` stays as fallback.
+  `generateStream()` talking to the daemon (POST `/generate`, read `resp.body` as
+  a PCM stream, `X-Sample-Rate` header — same shape as `mlx.ts`
+  `generateStreamViaServer`); re-bake the 6 persona clones from
+  `AdvisoriumPAI/voices/*.wav` into the daemon's resources dir at conditioning
+  −20; council turns POST `stream:false` + `targetRmsDb` from `advisorium.yaml`;
+  Python `pocket-tts serve` stays as fallback.
 - **Verify app still builds in Xcode** after the shared-file edits (additive, but
   not yet re-confirmed via `xcodebuild`).
 - Decide how to ship the metallib for distribution (vs copy-from-app).
+- **Daemon lifecycle** for P4: a start/stop/health-restart wrapper (mirror
+  `mlx.ts`'s `startMlxServer`/`ensureServerOrRestart` PID-file pattern) so
+  VoiceServer can bring the daemon up on demand and survive crashes.
 
 ## Related (PAI side)
 

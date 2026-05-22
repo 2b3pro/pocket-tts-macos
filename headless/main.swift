@@ -38,6 +38,7 @@ usage:
                  [--rms-db <target>]   # normalize output loudness to this dBFS RMS
   pockettts bake --wav <ref.wav> --out <voice_kv.safetensors> [--resources <dir>]
                  [--rms-db <target>]   # conditioning RMS baked into the clone (default -16)
+  pockettts serve [--port <int>] [--resources <dir>]   # persistent streaming HTTP daemon (default :8891)
 """
 
 let sub = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""
@@ -130,7 +131,7 @@ func runBake() async {
 
 // MARK: - RMS helpers (output loudness normalization)
 
-func rmsDB(_ samples: [Float]) -> Float {
+nonisolated func rmsDB(_ samples: [Float]) -> Float {
     guard !samples.isEmpty else { return -.infinity }
     var sumSq: Double = 0
     for s in samples { sumSq += Double(s) * Double(s) }
@@ -140,7 +141,7 @@ func rmsDB(_ samples: [Float]) -> Float {
 
 /// Scale `samples` so their RMS hits `targetDB` dBFS, then peak-limit to avoid
 /// clipping (scales the whole buffer down if the gain would push peaks > 1.0).
-func normalizeRMS(_ samples: [Float], targetDB: Float) -> [Float] {
+nonisolated func normalizeRMS(_ samples: [Float], targetDB: Float) -> [Float] {
     let current = rmsDB(samples)
     guard current.isFinite else { return samples }
     var gain = pow(10, (targetDB - current) / 20)
@@ -149,10 +150,33 @@ func normalizeRMS(_ samples: [Float], targetDB: Float) -> [Float] {
     return samples.map { $0 * gain }
 }
 
+// MARK: - serve (persistent streaming daemon)
+
+func runServe() async {
+    let port = UInt16(argValue("--port") ?? "") ?? 8891
+    do {
+        let tInit = Date()
+        let engine = try await TTSEngine()
+        note(String(format: "[pockettts] engine init: %.0f ms", Date().timeIntervalSince(tInit) * 1000))
+
+        let daemon = try PocketDaemon(engine: engine, port: port)
+        daemon.start()
+        note("[pockettts] serving on http://127.0.0.1:\(port)  (GET /health · POST /generate · POST /shutdown)")
+
+        // Park the main task; the NWListener runs on its own dispatch queue.
+        // /shutdown (or SIGTERM) calls exit(0).
+        signal(SIGTERM, { _ in exit(0) })
+        while true { try await Task.sleep(nanoseconds: 60 * 1_000_000_000) }
+    } catch {
+        fail("serve failed: \(error)", code: 1)
+    }
+}
+
 // MARK: - Dispatch
 
 switch sub {
-case "say":  await runSay()
-case "bake": await runBake()
-default:     fail(usage)
+case "say":   await runSay()
+case "bake":  await runBake()
+case "serve": await runServe()
+default:      fail(usage)
 }

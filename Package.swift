@@ -30,6 +30,7 @@ let package = Package(
             path: ".",
             sources: [
                 "headless/main.swift",
+                "headless/Server.swift",   // --- Streaming HTTP daemon (P3, MLX-free) ---
                 // --- Core ML synthesis path (P1, MLX-free) ---
                 "pocket-tts-macos/Engine/TTSEngine.swift",
                 "pocket-tts-macos/Engine/TTSEngineProtocol.swift",
