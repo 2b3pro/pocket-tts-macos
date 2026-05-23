@@ -11,7 +11,7 @@
 //    * future drops (`htdemucs_ft`, `htdemucs_6s`) can be appended
 //      without touching the manager's call-sites, and
 //    * UserDefaults round-trip for "active separator variant" works
-//      via the raw value the same way `WhisperModelVariant` does.
+//      via the raw value.
 //
 //  Each variant carries the metadata `DemucsModelManager` and the
 //  upcoming "Manage Separation Models…" sheet read at runtime:
@@ -59,9 +59,8 @@ nonisolated enum DemucsModelVariant: String, CaseIterable, Identifiable, Codable
         }
     }
 
-    /// Plain-English "Good for" description. Mirrors
-    /// `WhisperModelVariant.recommendedFor` — gives the user a
-    /// reason to pick / understand the model without research.
+    /// Plain-English "Good for" description. Gives the user a reason
+    /// to pick / understand the model without research.
     var recommendedFor: String {
         switch self {
         case .htdemucs:

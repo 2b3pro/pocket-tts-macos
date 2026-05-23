@@ -226,7 +226,7 @@ actor MultiSpeakerRevoicer: MultiSpeakerRevoicing {
                 print("[Revoicer] \(assignment.speakerID) discarded — silenced segmentRanges in vocalsBed")
             case .revoice(let voiceID):
                 // Synthesize FIRST, then decide whether to modify the
-                // bed. If Whisper hallucinated `[BLANK _AUDIO]` for
+                // bed. If STT hallucinated `[BLANK _AUDIO]` for
                 // every segment (common when the speaker's slice has
                 // faint vocals + music bleed), TTS produces silence
                 // and zero-then-overlay would leave the bed silent
@@ -414,12 +414,10 @@ actor MultiSpeakerRevoicer: MultiSpeakerRevoicing {
         // WAV for STT. AGC-style pre-boost first: faint speakers
         // (HTDemucs's vocals stem at -40 dBFS RMS, broadcast dialog
         // under -35 LUFS, etc.) get amplified to ~-20 dBFS before
-        // Whisper sees them. Whisper's transcription quality
-        // degrades sharply on quiet input — chunks below ~-30 dBFS
-        // RMS tend to produce the "[BLANK _AUDIO]" hallucination
-        // pattern at fixed 30 s intervals even when there's real
-        // speech. Boosting brings the signal into Whisper's robust
-        // range. Soft-clip the boost so transient peaks that go
+        // the ASR backend sees them. Very quiet chunks historically
+        // produced blank-audio hallucinations even when there was
+        // real speech. Boosting brings the signal into the ASR's
+        // robust range. Soft-clip the boost so transient peaks that go
         // past ±1.0 fold back gracefully instead of hard-clipping.
         //
         // The boost is applied ONLY to the WAV fed to STT — the
@@ -428,7 +426,7 @@ actor MultiSpeakerRevoicer: MultiSpeakerRevoicing {
         // lands at the original speaker's perceived level in the
         // final mix.
         let speakerRMS = Self.rmsOfActiveSamples(assignment.isolatedMono24k)
-        let sttTargetRMS: Float = 0.1   // -20 dBFS RMS, Whisper's sweet spot
+        let sttTargetRMS: Float = 0.1   // -20 dBFS RMS, ASR sweet spot
         let boostFactor: Float
         if speakerRMS > 0 {
             let raw = sttTargetRMS / speakerRMS
@@ -473,7 +471,7 @@ actor MultiSpeakerRevoicer: MultiSpeakerRevoicing {
         }
 
         // Console log every transcribed segment so we can spot
-        // Whisper artifacts that aren't in the strip whitelist yet.
+        // transcription artifacts that aren't in the strip whitelist yet.
         print("[Revoicer] STT for \(assignment.speakerID) produced \(segments.count) segments:")
         for seg in segments {
             print(String(format: "  [%.2f-%.2fs] \"%@\"", seg.startSec, seg.endSec, seg.text))
@@ -494,7 +492,7 @@ actor MultiSpeakerRevoicer: MultiSpeakerRevoicing {
 
         // Match the synthesized track's loudness to the speaker's
         // original audio. The STT pre-boost above amplified the
-        // input for Whisper's benefit; this step brings the TTS
+        // input for STT's benefit; this step brings the TTS
         // output DOWN to the original speaker's perceived level so
         // the final mix matches the source loudness even when the
         // source is quiet (broadcast dialog, post-separation vocals

@@ -102,8 +102,8 @@ actor AudioFileLoader {
     /// - Parameters:
     ///   - url: source file. Any AVFoundation-readable audio or video
     ///     format works.
-    ///   - targetSampleRate: hz. Common values: 16_000 (Whisper /
-    ///     SpeakerKit), 24_000 (the project's TTS pipeline default),
+    ///   - targetSampleRate: hz. Common values: 16_000 (ASR /
+    ///     diarization), 24_000 (the project's TTS pipeline default),
     ///     44_100 (HTDemucs).
     ///   - mixToMono: when true (default), decodes a single mono
     ///     channel via AVFoundation's downmix (the same path that

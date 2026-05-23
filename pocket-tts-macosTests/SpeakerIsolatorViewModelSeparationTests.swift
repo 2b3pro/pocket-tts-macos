@@ -101,7 +101,7 @@ final class SpeakerIsolatorViewModelSeparationTests: XCTestCase {
 
         // Background row holds the separator's music stem.
         XCTAssertEqual(bg.isolatedSamples.count,
-                       musicfulStems().music.count)
+                       musicfulStems().music.sampleCount)
 
         XCTAssertEqual(mockSeparator.separateCallCount, 1,
                        "separator must run exactly once")

@@ -419,7 +419,6 @@ struct ContentView: View {
                 isPresented: $appState.showsVoiceChanger,
                 viewModel: vm,
                 voices: voices,
-                modelManager: WhisperModelManager.shared,
                 chatSettings: $appState.chatSettings
             )
             .onDisappear { voiceChangerVM = nil }
@@ -472,7 +471,6 @@ struct ContentView: View {
                 isPresented: $appState.showsSpeakerIsolator,
                 viewModel: vm,
                 voices: voices,
-                modelManager: WhisperModelManager.shared,
                 demucsModelManager: DemucsModelManager.shared,
                 chatSettings: $appState.chatSettings
             )

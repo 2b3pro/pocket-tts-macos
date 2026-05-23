@@ -86,8 +86,7 @@ pocket-tts-macos/
 │   │   ├── Tokenizer.swift           (SentencePiece wrapper)
 │   │   ├── VoiceLoader.swift         (safetensors → MLMultiArray)
 │   │   ├── VoiceManager.swift        (saved-voices/ catalog + import + orphan recovery)
-│   │   ├── WhisperKitSTT.swift       (Whisper transcription backend)
-│   │   ├── WhisperModelManager.swift (Whisper model download/lifecycle)
+│   │   ├── FluidAudioSTT.swift         (Parakeet transcription backend)
 │   │   ├── SpeakerIsolator.swift     (segment-based speaker extraction)
 │   │   ├── SpeakerKitDiarizationProvider.swift
 │   │   ├── MultiSpeakerRevoicer.swift
@@ -132,7 +131,6 @@ pocket-tts-macos/
 │   │   ├── ChatView.swift
 │   │   ├── VoiceChangerSheet.swift
 │   │   ├── SpeakerIsolatorSheet.swift
-│   │   ├── WhisperModelManagerSheet.swift
 │   │   ├── DemucsModelManagerSheet.swift
 │   │   └── SpeakerIsolator/
 │   │       ├── AudioPreservationSection.swift

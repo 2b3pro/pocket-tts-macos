@@ -191,7 +191,7 @@ final class SpeakerIsolatorViewModel {
     var playingSpeakerID: String? = nil
 
     /// User-supplied tuning for the diarization step. Default values
-    /// preserve SpeakerKit's out-of-the-box behavior.
+    /// preserve the FluidInference diarizer's out-of-the-box behavior.
     var diarizationSettings: DiarizationSettings = DiarizationSettings()
 
     /// User toggle for the Audio Preservation feature (HTDemucs
@@ -257,10 +257,9 @@ final class SpeakerIsolatorViewModel {
 
     /// Cached STT instance for the Change Voices pipeline. Lazily
     /// built on the first run, then reused across subsequent
-    /// "Change Voices…" clicks as long as the user hasn't switched
-    /// transcription models in the meantime. Avoids re-paying the
-    /// WhisperKit model-load cost when the user tweaks per-speaker
-    /// voice assignments and re-runs.
+    /// "Change Voices…" clicks as long as the backend key has not
+    /// changed. Avoids re-paying the FluidAudio model-load cost when
+    /// the user tweaks per-speaker voice assignments and re-runs.
     ///
     /// Eviction policy: when `cachedSTTKey` differs from the key
     /// passed to `runChangeVoicesPipeline`, the cached instance is
@@ -286,7 +285,7 @@ final class SpeakerIsolatorViewModel {
     init(
         engine: any TTSEngineProtocol,
         loader: AudioFileLoader = AudioFileLoader(),
-        diarizationProvider: any DiarizationProvider = SpeakerKitDiarizationProvider(),
+        diarizationProvider: any DiarizationProvider = FluidAudioDiarizationProvider(),
         sourceSeparator: (any SourceSeparator)? = nil,
         revoicer: any MultiSpeakerRevoicing = MultiSpeakerRevoicer(),
         muxer: any VideoMuxing = VideoMuxer()

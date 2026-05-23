@@ -34,7 +34,7 @@ nonisolated struct AudioBuffer: Sendable, Equatable {
     // MARK: - Fields
 
     let channels: Channels
-    /// Hz. Common values: 16_000 (Whisper / pyannote), 24_000 (Mimi /
+    /// Hz. Common values: 16_000 (ASR / diarization), 24_000 (Mimi /
     /// pocket-tts pipeline), 44_100 (HTDemucs / music).
     let sampleRate: Int
 

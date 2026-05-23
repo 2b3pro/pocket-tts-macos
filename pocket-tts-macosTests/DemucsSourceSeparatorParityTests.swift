@@ -97,15 +97,15 @@ final class DemucsSourceSeparatorParityTests: XCTestCase {
 
         // Output basics
         XCTAssertEqual(stems.sampleRate, 24_000)
-        XCTAssertGreaterThan(stems.vocals.count, 0)
-        XCTAssertEqual(stems.vocals.count, stems.music.count,
+        XCTAssertGreaterThan(stems.vocals.sampleCount, 0)
+        XCTAssertEqual(stems.vocals.sampleCount, stems.music.sampleCount,
                        "vocals + music must be equal-length")
 
         // Output length within ~5% of expected (10 s * 24 kHz = 240k)
         let expected24k = Int(Double(goldenStereo.left.count)
                             * 24_000.0 / 44_100.0)
         XCTAssertGreaterThan(
-            stems.vocals.count,
+            stems.vocals.sampleCount,
             Int(Double(expected24k) * 0.95),
             "produced vocals must be within 5% of expected length"
         )
@@ -113,8 +113,8 @@ final class DemucsSourceSeparatorParityTests: XCTestCase {
         // No NaNs / infinities, amplitudes in a sane range. Soft-clip
         // (Commit 7) lives downstream; here we just want to confirm
         // separator output didn't go off the rails.
-        let vocalsPeak = stems.vocals.map { abs($0) }.max() ?? 0
-        let musicPeak = stems.music.map { abs($0) }.max() ?? 0
+        let vocalsPeak = peakAbs(stems.vocals)
+        let musicPeak = peakAbs(stems.music)
         XCTAssertFalse(vocalsPeak.isNaN || vocalsPeak.isInfinite,
                        "vocals contains NaN/inf")
         XCTAssertFalse(musicPeak.isNaN || musicPeak.isInfinite,
@@ -147,14 +147,14 @@ final class DemucsSourceSeparatorParityTests: XCTestCase {
         let stems = try await separator.separate(inputBuffer)
 
         XCTAssertEqual(stems.sampleRate, 24_000)
-        XCTAssertGreaterThan(stems.vocals.count, 0)
-        XCTAssertGreaterThan(stems.music.count, 0)
+        XCTAssertGreaterThan(stems.vocals.sampleCount, 0)
+        XCTAssertGreaterThan(stems.music.sampleCount, 0)
 
         // Sanity: amplitudes within model's typical range.
         // Soft-clip math downstream caps to ±1; raw separator
         // output should at least stay in a comfortable headroom
         // range.
-        let vocalsPeak = stems.vocals.map { abs($0) }.max() ?? 0
+        let vocalsPeak = peakAbs(stems.vocals)
         XCTAssertLessThan(vocalsPeak, 5.0,
                           "vocals peak \(vocalsPeak) looks unreasonable")
     }
@@ -181,6 +181,16 @@ final class DemucsSourceSeparatorParityTests: XCTestCase {
         let left = Array(UnsafeBufferPointer(start: chans[0], count: n))
         let right = Array(UnsafeBufferPointer(start: chans[1], count: n))
         return (left, right)
+    }
+
+    private func peakAbs(_ buffer: pocket_tts_macos.AudioBuffer) -> Float {
+        switch buffer.channels {
+        case .mono(let samples):
+            samples.map { abs($0) }.max() ?? 0
+        case .stereo(let left, let right):
+            max(left.map { abs($0) }.max() ?? 0,
+                right.map { abs($0) }.max() ?? 0)
+        }
     }
 
     /// Scale-Invariant Signal-to-Distortion Ratio in dB. The metric

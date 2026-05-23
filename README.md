@@ -92,7 +92,7 @@ Both Single Voice and Multi-Talk views have an "AI Write" button that opens an L
 - **Single Voice** — text editor, voice picker, synthesize, inline audio player
 - **Multi-Talk** — multi-speaker scripts with `{Speaker}` tags and `[Xs]` pause markers
 - **Chat** — LM Studio integration with streaming TTS, dictation, transcript export, orb visualizer
-- **Voice Changer** — drop an audio/video file, transcribe via WhisperKit or Apple Speech, re-voice with any installed voice while preserving the original timeline (silence + pause structure)
+- **Voice Changer** — drop an audio/video file, transcribe via Parakeet TDT v3 through FluidAudio, re-voice with any installed voice while preserving the original timeline (silence + pause structure)
 - **Speaker Isolation** — drop a multi-speaker audio/video file, diarize via SpeakerKit (Argmax's on-device pyannote), get per-speaker isolated tracks + a Background pseudo-row. Per-speaker actions: Use Original / Discard / Re-voice. Closed-loop video output via AVFoundation re-mux.
   - **Audio Preservation** (optional, opt-in) — when enabled, an on-device HTDemucs Core ML model separates the input into vocals + drums + bass + other stems. Re-voiced speakers ride on top of the preserved music stem, so background audio survives the re-voice. Model is a 287 MB user-downloaded `.mlpackage`; soft-falls back to v1 (music goes silent under revoiced speech) when not installed, with a banner pointing at the Manage Separation Models sheet.
 - **History** — SwiftData-backed log with "Reuse Setup"

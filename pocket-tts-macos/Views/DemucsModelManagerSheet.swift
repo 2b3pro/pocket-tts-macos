@@ -3,7 +3,7 @@
 //  pocket-tts-macos
 //
 //  Modal sub-sheet for managing the HTDemucs source-separation
-//  model. Mirrors `WhisperModelManagerSheet`'s shape: a single
+//  model. Mirrors the app's model-manager sheet shape: a single
 //  row for `.htdemucs` (v1 ships one variant), download + delete
 //  actions, and an inline progress indicator while a download
 //  is in flight.

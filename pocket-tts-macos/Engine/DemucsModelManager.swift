@@ -3,8 +3,8 @@
 //  pocket-tts-macos
 //
 //  @MainActor @Observable singleton owning the on-disk lifecycle for
-//  HTDemucs Core ML mlpackages. Mirrors `WhisperModelManager`'s shape
-//  (singleton, observed state, UserDefaults-persisted active) but
+//  HTDemucs Core ML mlpackages. Uses the app's model-manager pattern
+//  (singleton, observed state, UserDefaults-persisted active) and
 //  adds: SHA256 verify on download, exponential backoff (1/4/15 s
 //  production; configurable for tests), zip → unzip pipeline,
 //  versioned install dir, and manual-placement detection (user

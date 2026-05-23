@@ -186,16 +186,16 @@ nonisolated enum TextNormalizer {
         return lines.joined(separator: "\n")
     }
 
-    // MARK: - Whisper artifact stripping
+    // MARK: - STT artifact stripping
     //
-    // WhisperKit transcription emits non-speech markers as bracketed
-    // text like `[music]`, `[silence]`, `[BLANK_AUDIO]`, `[laughter]`,
-    // `[applause]`. These flow downstream into the TTS pipeline and
-    // get spoken literally ("bracket music bracket") unless we strip
-    // them upstream of synthesis.
+    // ASR backends can emit non-speech markers as bracketed text like
+    // `[music]`, `[silence]`, `[BLANK_AUDIO]`, `[laughter]`,
+    // `[applause]`. These flow downstream into the TTS pipeline and get
+    // spoken literally ("bracket music bracket") unless we strip them
+    // upstream of synthesis.
     //
     // Distinct from `stripStageDirections` because the strip set is
-    // a FIXED whitelist of known Whisper artifacts — we don't want to
+    // a FIXED whitelist of known ASR artifacts — we don't want to
     // strip every bracketed token (Pause markers `[1.5s]` and any
     // legitimate user-intent bracketed content stay). The whitelist
     // is case-insensitive and tolerates spaces / underscores
@@ -214,23 +214,23 @@ nonisolated enum TextNormalizer {
         //
         // The space/underscore class uses `[ _]*` (zero-or-more) so
         // multi-word artifacts tolerate any combination of separators
-        // Whisper sometimes emits: `blank_audio`, `blank audio`,
-        // `blank _audio` (space then underscore), `BLANK__AUDIO`
-        // (double underscore), etc.
+        // ASR output sometimes varies separators: `blank_audio`,
+        // `blank audio`, `blank _audio` (space then underscore),
+        // `BLANK__AUDIO` (double underscore), etc.
         //
         // Compound forms: each keyword optionally followed by a
         // single descriptive word (`music playing`, `music stops`,
-        // `audience laughs`, etc.). Whisper hallucinates these on
-        // content it can't transcribe — common on hip-hop rap over
-        // music where the ASR falls back to descriptors instead of
-        // lyrics. The `(?:\s+(?:playing|...))?` non-capture group
-        // matches the compound suffix when present without requiring
-        // it.
+        // `audience laughs`, etc.). ASR systems can hallucinate these
+        // on content they can't transcribe — historically common on
+        // hip-hop rap over music where the backend fell back to
+        // descriptors instead of lyrics. The
+        // `(?:\s+(?:playing|...))?` non-capture group matches the
+        // compound suffix when present without requiring it.
         pattern: #"[\[\(]\s*(silence|blank[ _]*audio|no[ _]*audio|music(?:\s+(?:playing|plays|stops?|starts?|stopping|starting|fading|fades?|over|begins?|ends?|continues?))?|laughter|laughs|laugh|applause|claps|clapping|noise|background[ _]*noise|inaudible|unintelligible|crosstalk|cough|coughs|sigh|sighs|breathing|chuckles?|murmurs?|typing|clicking|static|hissing|footsteps?)\s*[\]\)]"#,
         options: .caseInsensitive
     )
 
-    /// Whisper's dialogue-turn arrow. Appears both at segment start
+    /// Dialogue-turn arrow emitted by some ASR outputs. Appears both at segment start
     /// (`">> Hello"`) and mid-segment (`"What we do. >> There's
     /// more"`). Strip with no whitespace consumption so the
     /// surrounding text doesn't run together; the subsequent
@@ -250,13 +250,13 @@ nonisolated enum TextNormalizer {
         options: []
     )
 
-    /// Strip the known Whisper-emitted non-speech markers (see comment
+    /// Strip the known ASR-emitted non-speech markers (see comment
     /// above for the bracketed list) plus dialogue-marker artifacts
     /// (`>>`, leading `- `), trailing/leading orphan parens
     /// (`"text. ("` → `"text."`), empty paren pairs, and finally
     /// drops the whole segment if no letters survive (catches lone
-    /// parens like `"("`, `"( )"`, `") ( )"` that Whisper emits when
-    /// it hallucinates a marker around what was actually silence).
+    /// parens like `"("`, `"( )"`, `") ( )"` emitted when the backend
+    /// hallucinates a marker around what was actually silence).
     /// Collapses doubled spaces left behind. Safe to call on any
     /// text — no-op if no artifacts present.
     static func stripWhisperArtifacts(_ text: String) -> String {
@@ -271,7 +271,7 @@ nonisolated enum TextNormalizer {
         out = whisperLeadingDashRegex.stringByReplacingMatches(in: out, range: range, withTemplate: "")
 
         // Empty paren pairs: `( )`, `(  )`, `()` → drop. These show up
-        // when Whisper marked something as parenthetical but left it
+        // when ASR marked something as parenthetical but left it
         // empty (a transcription of a sigh / pause that came out
         // blank).
         out = out.replacingOccurrences(of: #"\(\s*\)"#, with: "", options: .regularExpression)
@@ -291,7 +291,7 @@ nonisolated enum TextNormalizer {
         out = out.trimmingCharacters(in: .whitespaces)
 
         // Final sanity check: if nothing letter-shaped remains, the
-        // segment was entirely Whisper noise (parens, punctuation,
+        // segment was entirely ASR noise (parens, punctuation,
         // whitespace). Drop it → TimelineAlignedRenderer skips empty
         // segments so the timeline slot becomes silence instead of
         // a TTS reading of "open paren".

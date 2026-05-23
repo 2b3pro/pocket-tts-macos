@@ -76,8 +76,8 @@ final class SourceSeparatorProtocolTests: XCTestCase {
         let input = AudioBuffer.mono([0.0, 0.0], sampleRate: 44_100)
         let stems = try await stub.separate(input)
 
-        XCTAssertEqual(stems.vocals, vocals)
-        XCTAssertEqual(stems.music, music)
+        XCTAssertEqual(stems.vocals, AudioBuffer.mono(vocals, sampleRate: 24_000))
+        XCTAssertEqual(stems.music, AudioBuffer.mono(music, sampleRate: 24_000))
         XCTAssertEqual(stems.sampleRate, 24_000)
     }
 
@@ -150,8 +150,8 @@ final class SourceSeparatorProtocolTests: XCTestCase {
         // precondition only fires on length MISMATCH.
         let stems = SeparatedStems(vocals: [], music: [], sampleRate: 24_000)
         XCTAssertEqual(stems.sampleCount, 0)
-        XCTAssertEqual(stems.vocals.count, 0)
-        XCTAssertEqual(stems.music.count, 0)
+        XCTAssertEqual(stems.vocals.sampleCount, 0)
+        XCTAssertEqual(stems.music.sampleCount, 0)
     }
 
     func test_separatedStems_isEquatable() {

@@ -3,8 +3,8 @@
 //  pocket-tts-macos
 //
 //  Modal sheet for the Voice Changer feature. Input audio → STT
-//  (WhisperKit if a model is downloaded, SFSpeechRecognizer fallback
-//  otherwise) → silence-preserving script → TTS in the chosen voice.
+//  (Parakeet via FluidAudio) → silence-preserving script → TTS in
+//  the chosen voice.
 //  Result-panel reuses the existing AudioPlayer component so WAV/AAC
 //  export comes for free (and inherits the .m4a/.mp4 fix shipped in
 //  commit 4aa82da).
@@ -22,12 +22,10 @@ struct VoiceChangerSheet: View {
     @Binding var isPresented: Bool
     @Bindable var viewModel: VoiceChangerViewModel
     let voices: [BundledVoice]
-    @Bindable var modelManager: WhisperModelManager
     @Binding var chatSettings: ChatSettings
 
     @State private var showImporter: Bool = false
     @State private var isDropTargeted: Bool = false
-    @State private var showModelManagerSheet: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.space4) {
@@ -55,13 +53,6 @@ struct VoiceChangerSheet: View {
         }
         .frame(width: 540, height: 600)
         .background(Theme.bgPrimary)
-        // Sheet WhisperKit's Manage-Models sub-sheet over this one.
-        .sheet(isPresented: $showModelManagerSheet) {
-            WhisperModelManagerSheet(
-                isPresented: $showModelManagerSheet,
-                modelManager: modelManager
-            )
-        }
         .fileImporter(
             isPresented: $showImporter,
             allowedContentTypes: [.wav, .mp3, .aiff, .audio, .movie],
@@ -197,41 +188,21 @@ struct VoiceChangerSheet: View {
 
     private var modelSection: some View {
         VStack(alignment: .leading, spacing: Theme.space3) {
-            sectionLabel("Transcription Model", systemImage: "doc.text.viewfinder")
+            sectionLabel("Transcription", systemImage: "doc.text.viewfinder")
 
             HStack(spacing: Theme.space3) {
-                if let active = modelManager.active {
-                    Image(systemName: "checkmark.seal.fill")
-                        .foregroundStyle(Theme.accent)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(active.displayName)
-                            .font(Theme.fontSMBold)
-                            .foregroundStyle(Theme.textPrimary)
-                        Text("\(active.approxSize) · \(active.speedDescription)")
-                            .font(Theme.fontXS)
-                            .foregroundStyle(Theme.textSecondary)
-                    }
-                } else {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(Theme.warningFG)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Apple Speech Recognition (fallback)")
-                            .font(Theme.fontSMBold)
-                            .foregroundStyle(Theme.textPrimary)
-                        Text("Slower and less accurate. Download a Whisper model for higher quality.")
-                            .font(Theme.fontXS)
-                            .foregroundStyle(Theme.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                Image(systemName: "checkmark.seal.fill")
+                    .foregroundStyle(Theme.successFG)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Parakeet TDT v3 via FluidAudio")
+                        .font(Theme.fontSMBold)
+                        .foregroundStyle(Theme.textPrimary)
+                    Text("Downloads automatically on first use, then runs on-device from the app cache.")
+                        .font(Theme.fontXS)
+                        .foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                Button("Manage Models…") {
-                    showModelManagerSheet = true
-                }
-                .buttonStyle(.plain)
-                .font(Theme.fontSM)
-                .foregroundStyle(Theme.accent)
-                .disabled(viewModel.status.isWorking)
             }
         }
         .themePanel()

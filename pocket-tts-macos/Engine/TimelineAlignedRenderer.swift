@@ -79,7 +79,7 @@ nonisolated enum TimelineAlignedRenderer {
             if Task.isCancelled { break }
             onProgress?(i + 1, total)
 
-            // Strip Whisper's non-speech markers ([music], [silence],
+            // Strip known STT non-speech markers ([music], [silence],
             // [laughter], etc.) before sending to TTS — otherwise the
             // synthesizer speaks them literally ("bracket music
             // bracket"). The stripping is a fixed-whitelist pass so

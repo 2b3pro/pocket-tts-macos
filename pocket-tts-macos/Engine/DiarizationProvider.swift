@@ -81,6 +81,23 @@ nonisolated struct DiarizationSettings: Sendable, Equatable {
     var pyannoteClusterDistanceThreshold: Float {
         Float(0.9 - sensitivity * 0.6)
     }
+
+    /// Map the normalized 0.0-1.0 sensitivity onto FluidAudio's
+    /// `DiarizerConfig.clusteringThreshold` range. FluidAudio's
+    /// default is 0.7; sensitivity 0.5 returns 0.7 exactly.
+    /// Sensitivity 1.0 → 0.45 (tighter clusters, more speakers);
+    /// sensitivity 0.0 → 0.95 (looser clusters, fewer speakers).
+    /// Same semantics as the pyannote knob — higher sensitivity
+    /// pushes the threshold lower so embeddings have to be closer
+    /// to merge into the same cluster.
+    ///
+    /// Unlike SpeakerKit's VBx implementation (where the threshold
+    /// is a soft hint that the variational-Bayes loop overrides),
+    /// FluidAudio applies its threshold directly in the clustering
+    /// step — so the slider has real effect.
+    var fluidAudioClusteringThreshold: Float {
+        Float(0.95 - sensitivity * 0.5)
+    }
 }
 
 protocol DiarizationProvider: Sendable {

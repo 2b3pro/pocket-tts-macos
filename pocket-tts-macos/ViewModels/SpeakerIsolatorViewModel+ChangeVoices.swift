@@ -27,7 +27,7 @@ extension SpeakerIsolatorViewModel {
     ///     to construct this eagerly — STT initialization is cheap
     ///     (the expensive model load is deferred to first transcribe).
     ///   - cacheKey: Stable identifier for the supplied STT (e.g.
-    ///     `"whisper:base.en"`, `"apple-speech"`). Subsequent
+    ///     `"fluidaudio-parakeet-v3"`). Subsequent
     ///     invocations with the same `cacheKey` reuse the cached
     ///     STT instance — and therefore its already-loaded model —
     ///     instead of paying the load cost again.

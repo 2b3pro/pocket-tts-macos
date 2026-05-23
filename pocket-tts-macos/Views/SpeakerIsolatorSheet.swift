@@ -26,7 +26,6 @@ struct SpeakerIsolatorSheet: View {
     @Binding var isPresented: Bool
     @Bindable var viewModel: SpeakerIsolatorViewModel
     let voices: [BundledVoice]
-    @Bindable var modelManager: WhisperModelManager
     /// Phase 7: HTDemucs source-separation model manager. Drives
     /// the Audio Preservation toggle's "models downloaded" gate
     /// + the Manage Separation Models sub-sheet.
@@ -35,7 +34,6 @@ struct SpeakerIsolatorSheet: View {
 
     @State private var showImporter: Bool = false
     @State private var isDropTargeted: Bool = false
-    @State private var showModelManagerSheet: Bool = false
     @State private var showDemucsModelManagerSheet: Bool = false
 
     var body: some View {
@@ -75,16 +73,6 @@ struct SpeakerIsolatorSheet: View {
         }
         .frame(width: 620, height: 936)
         .background(Theme.bgPrimary)
-        // Sub-sheet for WhisperKit's Manage Models view. Mirrors
-        // VoiceChangerSheet's wiring so the user can switch / download
-        // a transcription model without leaving the Speaker Isolator —
-        // the Change-Voices pipeline uses the same STT as Voice Changer.
-        .sheet(isPresented: $showModelManagerSheet) {
-            WhisperModelManagerSheet(
-                isPresented: $showModelManagerSheet,
-                modelManager: modelManager
-            )
-        }
         // Phase 7: HTDemucs Manage Separation Models sheet. Driven
         // by the Audio Preservation section's inline CTA + by the
         // soft-fallback banner (when separationFellBackToV1).
@@ -255,51 +243,25 @@ struct SpeakerIsolatorSheet: View {
     // MARK: - Transcription model
 
     /// Mirror of `VoiceChangerSheet.modelSection`. Surfaced here too
-    /// because the Change Voices pipeline uses Whisper for STT (per-
-    /// speaker isolated audio → transcript → revoice). Letting the
-    /// user download / switch models without bouncing over to Single
-    /// Voice → Change Voice saves a context shift.
+    /// because the Change Voices pipeline transcribes each selected
+    /// speaker before revoicing.
     private var transcriptionModelSection: some View {
         VStack(alignment: .leading, spacing: Theme.space3) {
-            sectionLabel("Transcription Model", systemImage: "doc.text.viewfinder")
+            sectionLabel("Transcription", systemImage: "doc.text.viewfinder")
 
             HStack(spacing: Theme.space3) {
-                if let active = modelManager.active {
-                    Image(systemName: "checkmark.seal.fill")
-                        // Green for "installed" — matches the
-                        // Audio Preservation + Manage Separation
-                        // Models badges. The orange brand accent
-                        // is reserved for actions, not state.
-                        .foregroundStyle(Theme.successFG)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(active.displayName)
-                            .font(Theme.fontSMBold)
-                            .foregroundStyle(Theme.textPrimary)
-                        Text("\(active.approxSize) · \(active.speedDescription)")
-                            .font(Theme.fontXS)
-                            .foregroundStyle(Theme.textSecondary)
-                    }
-                } else {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(Theme.warningFG)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Apple Speech Recognition (fallback)")
-                            .font(Theme.fontSMBold)
-                            .foregroundStyle(Theme.textPrimary)
-                        Text("Used only for the Change Voices step. Slower and less accurate than Whisper — download a model for higher quality re-voicing.")
-                            .font(Theme.fontXS)
-                            .foregroundStyle(Theme.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                Image(systemName: "checkmark.seal.fill")
+                    .foregroundStyle(Theme.successFG)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Parakeet TDT v3 via FluidAudio")
+                        .font(Theme.fontSMBold)
+                        .foregroundStyle(Theme.textPrimary)
+                    Text("Used for Change Voices. Downloads automatically on first use, then runs on-device from the app cache.")
+                        .font(Theme.fontXS)
+                        .foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                Button("Manage Models…") {
-                    showModelManagerSheet = true
-                }
-                .buttonStyle(.plain)
-                .font(Theme.fontSM)
-                .foregroundStyle(Theme.accent)
-                .disabled(viewModel.status.isWorking)
             }
         }
         .themePanel()
@@ -466,22 +428,14 @@ struct SpeakerIsolatorSheet: View {
     // import + dismiss helpers below).
 
     private func runChangeVoices() {
-        // STT selection mirrors VoiceChangerViewModel: WhisperKit when
-        // a model is downloaded, SpeechFramework as the fallback. The
-        // `cacheKey` lets the VM reuse a previously-loaded STT
-        // instance across subsequent Change-Voices clicks without
-        // re-paying the model-load cost, but evict the cache cleanly
-        // if the user has since switched models via Manage Models.
-        let stt: STTProvider
-        let cacheKey: String
-        if let activeVariant = WhisperModelManager.shared.active {
-            let folderURL = WhisperModelManager.shared.modelFolderURL(for: activeVariant)
-            stt = WhisperKitSTT(variant: activeVariant, modelFolderURL: folderURL)
-            cacheKey = "whisper:\(activeVariant.rawValue)"
-        } else {
-            stt = SpeechFrameworkSTT()
-            cacheKey = "apple-speech"
-        }
+        // STT backend: FluidAudio / Parakeet TDT v3. The cacheKey
+        // identifies this provider+model combo so the VM's STT cache
+        // (in `cachedSTT` / `cachedSTTKey`) reuses the same loaded
+        // FluidAudioSTT instance across consecutive Change-Voices
+        // runs — important because FluidAudio's first transcribe
+        // pays a multi-second model-load cost we don't want to repeat.
+        let stt: STTProvider = FluidAudioSTT()
+        let cacheKey = "fluidaudio-parakeet-v3"
         viewModel.runChangeVoicesPipeline(stt: stt, cacheKey: cacheKey)
     }
 
