@@ -26,6 +26,9 @@ struct VoiceChangerSheet: View {
 
     @State private var showImporter: Bool = false
     @State private var isDropTargeted: Bool = false
+    /// Shared across the Voice Changer + Speaker Isolator sheets via
+    /// the same `@AppStorage` key — one user preference, two surfaces.
+    @AppStorage("matchOriginalPace") private var matchOriginalPace: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.space4) {
@@ -36,6 +39,10 @@ struct VoiceChangerSheet: View {
                     inputAudioSection
                     voiceSection
                     modelSection
+                    SpeakingPaceSection(
+                        isOn: $matchOriginalPace,
+                        disabled: viewModel.status.isWorking
+                    )
 
                     if case let .done(_, samples) = viewModel.status {
                         resultSection(samples: samples)
@@ -286,7 +293,10 @@ struct VoiceChangerSheet: View {
                     .background(Theme.bgTertiary)
                     .clipShape(RoundedRectangle(cornerRadius: Theme.radius))
 
-                Button("Change Voice") { viewModel.convert() }
+                Button("Change Voice") {
+                    viewModel.matchOriginalPace = matchOriginalPace
+                    viewModel.convert()
+                }
                     .buttonStyle(.plain)
                     .font(Theme.fontSMBold)
                     .foregroundStyle(.white)

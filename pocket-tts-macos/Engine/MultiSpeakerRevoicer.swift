@@ -64,6 +64,7 @@ protocol MultiSpeakerRevoicing: Sendable {
         assignments: [MultiSpeakerRevoicer.SpeakerAssignment],
         engine: any TTSEngineProtocol,
         stt: STTProvider,
+        matchOriginalPace: Bool,
         onProgress: (@Sendable (String, Int, Int) -> Void)?
     ) async throws -> AudioBuffer
 }
@@ -193,6 +194,7 @@ actor MultiSpeakerRevoicer: MultiSpeakerRevoicing {
         assignments: [SpeakerAssignment],
         engine: any TTSEngineProtocol,
         stt: STTProvider,
+        matchOriginalPace: Bool = true,
         onProgress: (@Sendable (String, Int, Int) -> Void)? = nil
     ) async throws -> AudioBuffer {
         let bedRate = vocalsBed.sampleRate
@@ -241,6 +243,7 @@ actor MultiSpeakerRevoicer: MultiSpeakerRevoicing {
                     totalDurationSec: totalDurationSec,
                     engine: engine,
                     stt: stt,
+                    matchOriginalPace: matchOriginalPace,
                     onProgress: onProgress
                 )
                 try Task.checkCancellation()
@@ -342,6 +345,7 @@ actor MultiSpeakerRevoicer: MultiSpeakerRevoicing {
                     totalDurationSec: totalDurationSec,
                     engine: engine,
                     stt: stt,
+                    matchOriginalPace: true,
                     onProgress: onProgress
                 )
             }
@@ -408,6 +412,7 @@ actor MultiSpeakerRevoicer: MultiSpeakerRevoicing {
         totalDurationSec: Double,
         engine: any TTSEngineProtocol,
         stt: STTProvider,
+        matchOriginalPace: Bool,
         onProgress: (@Sendable (String, Int, Int) -> Void)?
     ) async throws -> [Float] {
         // Stage the speaker's mono 24 kHz isolated audio as a temp
@@ -479,12 +484,14 @@ actor MultiSpeakerRevoicer: MultiSpeakerRevoicing {
 
         // Hand off to TimelineAlignedRenderer with the chosen voice.
         let speakerID = assignment.speakerID
+        var options = SynthesisOptions()
+        options.matchOriginalPace = matchOriginalPace
         let synthesized = await TimelineAlignedRenderer.render(
             segments: segments,
             totalDurationSec: totalDurationSec,
             voiceID: voiceID,
             engine: engine,
-            options: SynthesisOptions(),
+            options: options,
             onProgress: { current, total in
                 onProgress?(speakerID, current, total)
             }

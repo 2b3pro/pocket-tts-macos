@@ -194,6 +194,16 @@ final class SpeakerIsolatorViewModel {
     /// preserve the FluidInference diarizer's out-of-the-box behavior.
     var diarizationSettings: DiarizationSettings = DiarizationSettings()
 
+    /// User toggle for the "Match original speaking pace" feature.
+    /// When true (default), revoiced segments that take longer to say
+    /// than the original are gently sped up via WSOLA time
+    /// compression so they fit the original timeline without altering
+    /// the new voice's pitch / timbre. When false, the renderer
+    /// allows segments to spill past their original boundaries.
+    /// Synced from the Speaker Isolator sheet's `@AppStorage`-backed
+    /// preference at the moment Change Voices runs.
+    var matchOriginalPace: Bool = true
+
     /// User toggle for the Audio Preservation feature (HTDemucs
     /// source separation). Defaults to ON when a separator was
     /// injected at init time; when no separator is wired up the

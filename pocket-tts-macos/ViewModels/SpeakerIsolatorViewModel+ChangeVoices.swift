@@ -84,6 +84,7 @@ extension SpeakerIsolatorViewModel {
         let engine = self.engine
         let pipeline = self.pipeline
         let videoAssetSnapshot = self.videoAsset
+        let matchOriginalPaceSnapshot = self.matchOriginalPace
 
         inflightTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -95,6 +96,7 @@ extension SpeakerIsolatorViewModel {
                     assignments: assignments,
                     engine: engine,
                     stt: effectiveSTT,
+                    matchOriginalPace: matchOriginalPaceSnapshot,
                     onProgress: { [weak self] speakerID, current, total in
                         Task { @MainActor in
                             self?.setStatus(.revoicing(

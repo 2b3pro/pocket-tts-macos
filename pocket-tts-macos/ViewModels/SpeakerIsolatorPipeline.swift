@@ -273,6 +273,7 @@ actor SpeakerIsolatorPipeline {
         assignments: [MultiSpeakerRevoicer.SpeakerAssignment],
         engine: any TTSEngineProtocol,
         stt: STTProvider,
+        matchOriginalPace: Bool,
         onProgress: (@Sendable (String, Int, Int) -> Void)?
     ) async throws -> AudioBuffer {
         try await revoicer.revoice(
@@ -282,6 +283,7 @@ actor SpeakerIsolatorPipeline {
             assignments: assignments,
             engine: engine,
             stt: stt,
+            matchOriginalPace: matchOriginalPace,
             onProgress: onProgress
         )
     }

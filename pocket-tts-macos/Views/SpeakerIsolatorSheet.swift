@@ -35,6 +35,9 @@ struct SpeakerIsolatorSheet: View {
     @State private var showImporter: Bool = false
     @State private var isDropTargeted: Bool = false
     @State private var showDemucsModelManagerSheet: Bool = false
+    /// Shared across the Voice Changer + Speaker Isolator sheets via
+    /// the same `@AppStorage` key — one user preference, two surfaces.
+    @AppStorage("matchOriginalPace") private var matchOriginalPace: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.space4) {
@@ -49,6 +52,10 @@ struct SpeakerIsolatorSheet: View {
                         viewModel: viewModel,
                         modelManager: demucsModelManager,
                         showsManageSheet: $showDemucsModelManagerSheet
+                    )
+                    SpeakingPaceSection(
+                        isOn: $matchOriginalPace,
+                        disabled: viewModel.status.isWorking
                     )
                     transcriptionModelSection
 
@@ -436,6 +443,7 @@ struct SpeakerIsolatorSheet: View {
         // pays a multi-second model-load cost we don't want to repeat.
         let stt: STTProvider = FluidAudioSTT()
         let cacheKey = "fluidaudio-parakeet-v3"
+        viewModel.matchOriginalPace = matchOriginalPace
         viewModel.runChangeVoicesPipeline(stt: stt, cacheKey: cacheKey)
     }
 
