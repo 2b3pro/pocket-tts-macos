@@ -46,6 +46,13 @@ extension SpeakerIsolatorViewModel {
 
         inflightTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            // Hold the Powerbox grant for the full pipeline — loader
+            // (24 kHz mono + 44.1 kHz stereo), diarizer, and HTDemucs
+            // separator all read `inputURL` from background executors.
+            // Without this a sandboxed build hits NSCocoaErrorDomain
+            // 257 at the first AVFoundation read.
+            let didStart = inputURL.startAccessingSecurityScopedResource()
+            defer { if didStart { inputURL.stopAccessingSecurityScopedResource() } }
             do {
                 // 1. Ensure diarization model. Done in `convertAndIsolate`
                 //    (vs. the Manage Models sheet) because diarization
