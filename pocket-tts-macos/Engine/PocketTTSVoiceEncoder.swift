@@ -69,10 +69,15 @@ actor PocketTTSVoiceEncoder {
 
             _ = encoder  // silence unused-variable warning
 
-            // Load voice_prompt_phase (Core ML)
+            // Load voice_prompt_phase (Core ML). Phase 8 moved this
+            // out of the bundle into the runtime-downloaded set;
+            // ModelPaths transparently resolves to the right
+            // location (downloaded under Application Support if
+            // present, otherwise falls back to the bundle for
+            // builds that still ship it).
             let cuNoANE = MLModelConfiguration()
             cuNoANE.computeUnits = .cpuAndGPU
-            let phaseURL = try Self.bundleURL(forResource: "voice_prompt_phase", withExtension: "mlmodelc")
+            let phaseURL = try ModelPaths.voicePromptPhase()
             self.voicePhaseModel = try MLModel(contentsOf: phaseURL, configuration: cuNoANE)
 
             status = .ready

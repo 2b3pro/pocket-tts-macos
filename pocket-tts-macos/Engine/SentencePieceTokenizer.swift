@@ -93,7 +93,17 @@ nonisolated struct SentencePieceTokenizer: Tokenizer {
     let subSentenceBoundaryTokenIDs: Set<Int32>
 
     init() throws {
-        guard let url = Bundle.main.url(forResource: "tokenizer_vocab", withExtension: "json") else {
+        // Phase 8: `tokenizer_vocab.json` is published with the
+        // stock-assets HF bundle and installed under Application
+        // Support on first launch. `ModelPaths.tokenizerVocab()`
+        // resolves the installed copy, falling back to Bundle.main
+        // for any future re-bundled build. Either way, missing →
+        // `LoadError.vocabMissing` so the error vocabulary callers
+        // already handle stays intact.
+        let url: URL
+        do {
+            url = try ModelPaths.tokenizerVocab()
+        } catch {
             throw LoadError.vocabMissing
         }
         do {

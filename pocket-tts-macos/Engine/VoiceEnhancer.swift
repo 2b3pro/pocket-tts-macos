@@ -276,9 +276,17 @@ private class LavaSREnhancer: Module {
     static func load() async throws -> LavaSREnhancer {
         let model = LavaSREnhancer()
 
+        // Phase 8.5: LavaSR weights ship via the voice-tools HF
+        // bundle, installed by `BundledMLModelManager` on first
+        // launch. `ModelPaths.lavasrEnhancerWeights()` resolves the
+        // installed copy, falling back to `Bundle.main` for a future
+        // re-bundled build. As a last resort, the legacy
+        // ModelUtils-driven HuggingFace lookup (`YatharthS/LavaSR`)
+        // stays as a safety net for dev environments that have a
+        // local conversion-script output but no installed bundle.
         let weightsURL: URL
-        if let bundled = Bundle.main.url(forResource: "lavasr_enhancer_v2", withExtension: "safetensors") {
-            weightsURL = bundled
+        if let resolved = try? ModelPaths.lavasrEnhancerWeights() {
+            weightsURL = resolved
         } else {
             let modelDir = try await ModelUtils.resolveOrDownloadModel(
                 repoID: "YatharthS/LavaSR",

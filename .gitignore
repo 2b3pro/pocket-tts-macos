@@ -17,12 +17,32 @@ DerivedData/
 .build/
 # Package.resolved is intentionally committed so dependency versions are reproducible
 
-# Bundled Core ML pipeline assets — populated by scripts/sync-assets.sh
-# (~724 MB; some weight blobs exceed GitHub's 100 MB single-file cap).
-# To rebuild Resources/ locally: run `./scripts/sync-assets.sh` from the
-# project root, which copies mlpackages, voice_kv_states, and tokenizer.model
-# from /Users/system-backup/dev_local/pocket-tts-core-ml-conversion/.
+# Bundled Core ML pipeline assets. Two storage tiers live under Resources/:
+#
+#   Heavy (NOT committed) — the four .mlpackage / .mlmodelc artifacts plus
+#   any compiled bundle output. ~500 MB total; well past GitHub's 100 MB
+#   single-file cap. As of Phase 8 these are runtime-downloaded by
+#   BundledMLModelManager from huggingface.co/slaughters85j/pocket-tts-coreml
+#   on first launch, so a fresh clone doesn't need them on disk to build.
+#
+#   Light (COMMITTED) — the 7 stock voice KV state safetensors, tokenizer.model,
+#   and tokenizer_vocab.json. ~6 MB total, CC-BY 4.0, never changes per build.
+#   Whitelisted below so `git status` picks them up.
 pocket-tts-macos/Resources/
+
+# Whitelist the small bundled assets so a clone-and-build works without any
+# external setup. Stock-only — custom voices ALWAYS live in the user's sandbox
+# container via the in-app Voice Manager, never in source.
+!pocket-tts-macos/Resources/tokenizer.model
+!pocket-tts-macos/Resources/tokenizer_vocab.json
+!pocket-tts-macos/Resources/voice_kv_states/
+!pocket-tts-macos/Resources/voice_kv_states/alba.safetensors
+!pocket-tts-macos/Resources/voice_kv_states/azelma.safetensors
+!pocket-tts-macos/Resources/voice_kv_states/cosette.safetensors
+!pocket-tts-macos/Resources/voice_kv_states/fantine.safetensors
+!pocket-tts-macos/Resources/voice_kv_states/javert.safetensors
+!pocket-tts-macos/Resources/voice_kv_states/jean.safetensors
+!pocket-tts-macos/Resources/voice_kv_states/marius.safetensors
 
 # Test output / scratch files
 *.wav
