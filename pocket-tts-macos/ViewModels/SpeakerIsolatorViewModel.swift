@@ -317,6 +317,12 @@ final class SpeakerIsolatorViewModel {
         inputAudioURL = url
         inputDurationSec = nil
         Task { @MainActor in
+            // Powerbox grant on user-picked URLs has to be claimed
+            // explicitly before reading from a background executor.
+            // Mirrors the VoiceChangerViewModel wrap so the AVURLAsset
+            // duration load doesn't trip NSCocoaErrorDomain 257.
+            let didStart = url.startAccessingSecurityScopedResource()
+            defer { if didStart { url.stopAccessingSecurityScopedResource() } }
             do {
                 let asset = AVURLAsset(url: url)
                 let duration = try await asset.load(.duration)

@@ -114,6 +114,17 @@ actor FishEngine: TTSEngineProtocol {
     ) async throws {
         guard status == .ready else { throw FishError.notBootstrapped }
         guard let model else { throw FishError.notBootstrapped }
+        // Cast to the concrete `FishSpeechModel` once and reuse for
+        // every generate call. The protocol existential
+        // (`any SpeechGenerationModel`) is non-Sendable, so awaiting
+        // a method on it from this actor-isolated context trips
+        // Swift 6's sender check; the concrete class is Sendable and
+        // sidesteps the diagnostic. At runtime the loader returns a
+        // FishSpeechModel, so the cast is total — failing it is a
+        // bootstrap-state bug, surfaced as `.notBootstrapped`.
+        guard let fishModel = model as? FishSpeechModel else {
+            throw FishError.notBootstrapped
+        }
         // Early cancellation check — if the consumer dropped the stream
         // before we even started, skip the entire chunk.
         if cancel.isCancelled {
@@ -137,8 +148,7 @@ actor FishEngine: TTSEngineProtocol {
         let audio: MLXArray
 
         if let codesPath = voiceMeta?.cachedCodesPath,
-           let codesLength = voiceMeta?.codesLength,
-           let fishModel = model as? FishSpeechModel {
+           let codesLength = voiceMeta?.codesLength {
             let codes = try MLX.loadArray(url: URL(fileURLWithPath: codesPath))
             print("[FishEngine] using cached codes (\(codesLength) frames)")
             audio = try await fishModel.generate(
@@ -150,12 +160,12 @@ actor FishEngine: TTSEngineProtocol {
         } else if let wavPath = voiceMeta?.wavPath {
             let refAudio = try Self.loadWAVIntoMLXArray(path: wavPath)
             print("[FishEngine] using raw WAV (no cached codes)")
-            audio = try await model.generate(
+            audio = try await fishModel.generate(
                 text: processed, voice: nil, refAudio: refAudio,
                 refText: voiceMeta?.transcript, language: nil
             )
         } else {
-            audio = try await model.generate(
+            audio = try await fishModel.generate(
                 text: processed, voice: nil, refAudio: nil,
                 refText: nil, language: nil
             )
