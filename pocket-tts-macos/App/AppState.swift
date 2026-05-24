@@ -157,8 +157,19 @@ final class AppState {
 
     /// One-shot loading state for the shared engine. UI surfaces this on first
     /// launch so the user knows something is happening during cold start.
+    ///
+    /// `.needsModelDownload` is the gate that blocks bootstrap until the user
+    /// taps Start on the first-launch sheet. Phase 8 moved the ~500 MB of
+    /// Core ML mlpackages out of the .app bundle into a runtime-downloaded
+    /// set under Application Support — on a fresh install (no Resources/
+    /// bundle copy, no prior download), `bootstrapIfNeeded` returns in this
+    /// state instead of constructing the engine. ContentView routes this
+    /// case to `FirstLaunchSetupView`, which drives
+    /// `BundledMLModelManager.shared.downloadAndInstallAll()` and calls
+    /// back into `bootstrapIfNeeded()` once the install set is complete.
     enum EngineStatus: Equatable {
         case loading
+        case needsModelDownload
         case ready
         case failed(String)
     }
@@ -187,8 +198,34 @@ final class AppState {
     }
 
     /// Build the Pocket-TTS engine + player once at app launch.
+    ///
+    /// Two-phase gate:
+    ///   1. Check `BundledMLModelManager.isReady`. If the four
+    ///      mlpackages aren't both downloaded AND not present in
+    ///      the .app bundle, surface `.needsModelDownload` and
+    ///      return — ContentView routes that to the first-launch
+    ///      sheet, which kicks off the download and re-invokes
+    ///      this method on completion.
+    ///   2. Otherwise construct TTSEngine (which itself calls
+    ///      `ModelPaths.promptPhase()` etc., resolving through the
+    ///      manager's downloaded set OR the bundle).
     func bootstrapIfNeeded() async {
         guard engine == nil else { return }
+
+        // Reset to loading so the UI shows the spinner during the
+        // (typically fast) readiness check + actual engine init.
+        // Without this, retry-after-download stays on whatever
+        // status was set before the user tapped Start.
+        self.engineStatus = .loading
+
+        // Gate 1: are the runtime-downloaded mlpackages present
+        // (or bundled — `isReady` returns true for either)?
+        guard BundledMLModelManager.isReady else {
+            self.engineStatus = .needsModelDownload
+            return
+        }
+
+        // Gate 2: build the engine.
         do {
             let engine = try await TTSEngine()
             let player = try StreamingPlayer()

@@ -29,6 +29,18 @@ struct ContentView: View {
                 switch appState.engineStatus {
                 case .loading:
                     loadingView
+                case .needsModelDownload:
+                    // Phase 8 — fresh install with no bundled
+                    // mlpackages. Block the main UI until the user
+                    // taps Start in the first-launch sheet and the
+                    // download completes. After completion the view
+                    // calls `appState.bootstrapIfNeeded()` again,
+                    // which flips engineStatus to .ready and we
+                    // route to `readyView` on the next render.
+                    FirstLaunchSetupView(
+                        manager: BundledMLModelManager.shared,
+                        onSetupComplete: { await appState.bootstrapIfNeeded() }
+                    )
                 case let .failed(msg):
                     failureView(msg)
                 case .ready:
