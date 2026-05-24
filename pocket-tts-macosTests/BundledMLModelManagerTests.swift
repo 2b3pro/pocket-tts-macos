@@ -73,24 +73,27 @@ final class BundledMLModelManagerTests: XCTestCase {
                        "missing should list every required model")
     }
 
-    func test_manager_isReadyWhenAllFourCompiledFoldersExist() throws {
-        // Manually fake the post-install layout: one non-empty
-        // `<model>.mlmodelc` folder per BundledMLModel under
-        // `installed/<model>-v1/`. We're testing the disk-scan
-        // logic, not the download pipeline — content of the
-        // folder doesn't have to be a real Core ML build.
+    func test_manager_isReadyWhenAllRequiredFoldersExist() throws {
+        // Manually fake the post-install layout for every BundledMLModel
+        // case. Layout dispatches on `needsCoreMLCompile`:
+        //   * Core ML mlpackages  → `installed/<rawValue>-v1/<rawValue>.mlmodelc/`
+        //   * Stock-assets bundle → `installed/stock_assets-v1/`     (no .mlmodelc subdir)
+        // We're testing the disk-scan logic, not the download pipeline —
+        // content of the folder doesn't have to be real.
         for model in BundledMLModel.allCases {
-            let folder = tempBase
+            let versionedDir = tempBase
                 .appendingPathComponent("installed", isDirectory: true)
                 .appendingPathComponent("\(model.rawValue)-v1", isDirectory: true)
-                .appendingPathComponent("\(model.rawValue).mlmodelc", isDirectory: true)
+            let folder = model.needsCoreMLCompile
+                ? versionedDir.appendingPathComponent("\(model.rawValue).mlmodelc", isDirectory: true)
+                : versionedDir
             try FileManager.default.createDirectory(
                 at: folder, withIntermediateDirectories: true
             )
             // Drop a placeholder file so the non-empty check
             // passes. An empty dir is intentionally treated as
             // "not installed" (see test_emptyFolder_doesNotCountAsInstalled).
-            let placeholder = folder.appendingPathComponent("model.mlmodel")
+            let placeholder = folder.appendingPathComponent("placeholder")
             try Data().write(to: placeholder)
         }
 
@@ -100,7 +103,7 @@ final class BundledMLModelManagerTests: XCTestCase {
             baseDir: tempBase
         )
         XCTAssertTrue(manager.isReady,
-                      "manager with all four compiled folders must report ready")
+                      "manager with every required folder must report ready")
         XCTAssertEqual(manager.installed.count, BundledMLModel.allCases.count,
                        "installed set should match the required catalog")
         XCTAssertTrue(manager.missing.isEmpty,
@@ -108,18 +111,21 @@ final class BundledMLModelManagerTests: XCTestCase {
     }
 
     func test_partialInstall_isReadyFalse() throws {
-        // Install three of the four — the all-four AND should
-        // still fail. Order doesn't matter; pick the first three.
-        let installedCases = Array(BundledMLModel.allCases.prefix(3))
+        // Install N-1 of the N required artifacts — the all-required AND
+        // gate should still fail. Order doesn't matter; pick the prefix
+        // so the count is deterministic regardless of catalog size.
+        let installedCases = Array(BundledMLModel.allCases.dropLast())
         for model in installedCases {
-            let folder = tempBase
+            let versionedDir = tempBase
                 .appendingPathComponent("installed", isDirectory: true)
                 .appendingPathComponent("\(model.rawValue)-v1", isDirectory: true)
-                .appendingPathComponent("\(model.rawValue).mlmodelc", isDirectory: true)
+            let folder = model.needsCoreMLCompile
+                ? versionedDir.appendingPathComponent("\(model.rawValue).mlmodelc", isDirectory: true)
+                : versionedDir
             try FileManager.default.createDirectory(
                 at: folder, withIntermediateDirectories: true
             )
-            try Data().write(to: folder.appendingPathComponent("model.mlmodel"))
+            try Data().write(to: folder.appendingPathComponent("placeholder"))
         }
 
         let manager = BundledMLModelManager(
@@ -128,8 +134,8 @@ final class BundledMLModelManagerTests: XCTestCase {
             baseDir: tempBase
         )
         XCTAssertFalse(manager.isReady,
-                       "3-of-4 install must not flip isReady true")
-        XCTAssertEqual(manager.installed.count, 3)
+                       "N-1-of-N install must not flip isReady true")
+        XCTAssertEqual(manager.installed.count, BundledMLModel.allCases.count - 1)
         XCTAssertEqual(manager.missing.count, 1)
     }
 

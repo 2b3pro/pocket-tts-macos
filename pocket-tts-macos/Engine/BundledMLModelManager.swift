@@ -175,13 +175,28 @@ final class BundledMLModelManager {
 
     /// Static counterpart of `expectedCompiledModelURL(for:)` using
     /// the production default base dir. No existence check.
+    ///
+    /// Layout differs per model flavor:
+    ///   * Core ML mlpackages → compiled `.mlmodelc` lives inside
+    ///     `installed/<rawValue>-v1/<rawValue>.mlmodelc/`.
+    ///   * Stock-assets bundle (plain files, no compile) → the
+    ///     install dir IS the artifact:
+    ///     `installed/stock_assets-v1/` contains tokenizer.model,
+    ///     tokenizer_vocab.json, voice_kv_states/*.safetensors at
+    ///     the root.
+    /// The dispatch is `model.needsCoreMLCompile`.
     nonisolated static func expectedCompiledModelURL(
         for model: BundledMLModel,
         baseDir: URL
     ) -> URL {
-        baseDir.appendingPathComponent("installed", isDirectory: true)
+        let versionedFolder = baseDir
+            .appendingPathComponent("installed", isDirectory: true)
             .appendingPathComponent("\(model.rawValue)-\(installVersion)", isDirectory: true)
-            .appendingPathComponent("\(model.rawValue).mlmodelc", isDirectory: true)
+        if model.needsCoreMLCompile {
+            return versionedFolder.appendingPathComponent("\(model.rawValue).mlmodelc", isDirectory: true)
+        } else {
+            return versionedFolder
+        }
     }
 
     /// Static `isReady` — production-only fast path used by AppState's
@@ -361,54 +376,90 @@ final class BundledMLModelManager {
         await setDownloadState(.verifying, for: model)
         try verifySHA(stagingZip, expected: model.expectedSHA256, model: model)
 
-        // Phase 3: unzip
+        // Phase 3: unzip + sanity-check the inner. The expected
+        // inner name is per-model: an `.mlpackage` subdir for the
+        // Core ML cases, `tokenizer.model` for the stock-assets
+        // bundle (smallest required file).
         await setDownloadState(.installing, for: model)
         try unzip(stagingZip, into: stagingUnzip, model: model)
-        let expectedInner = "\(model.rawValue).mlpackage"
-        let unzippedMLPackage = stagingUnzip.appendingPathComponent(expectedInner)
-        guard FileManager.default.fileExists(atPath: unzippedMLPackage.path) else {
+        let expectedInner = model.expectedInnerName
+        let unzippedInner = stagingUnzip.appendingPathComponent(expectedInner)
+        guard FileManager.default.fileExists(atPath: unzippedInner.path) else {
             throw ManagerError.zipMissingExpectedInner(model, expectedInner)
         }
 
-        // Phase 4: compile mlpackage → mlmodelc (Core ML's one-time
-        // build step; ~3-10 s per model on M-series). The compiled
-        // URL Apple returns is in a temp location we have to move
-        // promptly — Core ML cleans it up on next boot otherwise.
-        await setDownloadState(.compiling, for: model)
-        let tempCompiledURL: URL
-        do {
-            tempCompiledURL = try await MLModel.compileModel(at: unzippedMLPackage)
-        } catch {
-            throw ManagerError.compileFailed(model, error)
-        }
-        defer {
-            // If the move below failed mid-flight Core ML's temp dir
-            // would leak; sweep it explicitly even on success (move
-            // copies, not renames cross-filesystem) so we never rely
-            // on Apple's own cleanup heuristic.
-            try? FileManager.default.removeItem(at: tempCompiledURL)
-        }
-
-        // Phase 5: atomic-ish move into the versioned install dir
+        // Phase 4: install — two flavors. Compile-and-install for
+        // Core ML mlpackages; copy-staging-into-place for plain-file
+        // bundles like stock_assets.
         let finalDir = installedDir.appendingPathComponent(
             "\(model.rawValue)-\(Self.installVersion)", isDirectory: true
         )
-        let finalURL = finalDir.appendingPathComponent("\(model.rawValue).mlmodelc")
-        do {
-            // Nuke any prior partial install so the move can land.
-            if FileManager.default.fileExists(atPath: finalDir.path) {
-                try FileManager.default.removeItem(at: finalDir)
+        if model.needsCoreMLCompile {
+            // Phase 4a: compile mlpackage → mlmodelc (Core ML's one-
+            // time build step; ~3-10 s per model on M-series). The
+            // compiled URL Apple returns is in a temp location we
+            // have to move promptly — Core ML cleans it up on next
+            // boot otherwise.
+            await setDownloadState(.compiling, for: model)
+            let tempCompiledURL: URL
+            do {
+                tempCompiledURL = try await MLModel.compileModel(at: unzippedInner)
+            } catch {
+                throw ManagerError.compileFailed(model, error)
             }
-            try FileManager.default.createDirectory(
-                at: finalDir, withIntermediateDirectories: true
-            )
-            // copy + clean, not move — temp + install dirs MIGHT be
-            // on different volumes (rare on macOS but cheap to be
-            // safe). The temp-copy defer above sweeps the source.
-            try FileManager.default.copyItem(at: tempCompiledURL, to: finalURL)
-        } catch {
-            try? FileManager.default.removeItem(at: finalDir)
-            throw ManagerError.installFailed(model, error)
+            defer {
+                // If the move below failed mid-flight Core ML's temp
+                // dir would leak; sweep it explicitly even on success
+                // (move copies, not renames cross-filesystem) so we
+                // never rely on Apple's own cleanup heuristic.
+                try? FileManager.default.removeItem(at: tempCompiledURL)
+            }
+
+            // Phase 5a: atomic-ish move into the versioned install
+            // dir, landing as `<rawValue>.mlmodelc` inside it.
+            let finalURL = finalDir.appendingPathComponent("\(model.rawValue).mlmodelc")
+            do {
+                // Nuke any prior partial install so the move can land.
+                if FileManager.default.fileExists(atPath: finalDir.path) {
+                    try FileManager.default.removeItem(at: finalDir)
+                }
+                try FileManager.default.createDirectory(
+                    at: finalDir, withIntermediateDirectories: true
+                )
+                // copy + clean, not move — temp + install dirs MIGHT
+                // be on different volumes (rare on macOS but cheap to
+                // be safe). The temp-copy defer above sweeps source.
+                try FileManager.default.copyItem(at: tempCompiledURL, to: finalURL)
+            } catch {
+                try? FileManager.default.removeItem(at: finalDir)
+                throw ManagerError.installFailed(model, error)
+            }
+        } else {
+            // Phase 4b/5b: plain-file install. The unzipped staging
+            // dir IS the artifact's contents (tokenizer.model +
+            // tokenizer_vocab.json + voice_kv_states/...). Copy each
+            // top-level entry into the versioned install dir. No
+            // compile, no .mlmodelc subdir — the install root is what
+            // `ModelPaths` resolves against.
+            do {
+                if FileManager.default.fileExists(atPath: finalDir.path) {
+                    try FileManager.default.removeItem(at: finalDir)
+                }
+                try FileManager.default.createDirectory(
+                    at: finalDir, withIntermediateDirectories: true
+                )
+                let entries = try FileManager.default.contentsOfDirectory(
+                    atPath: stagingUnzip.path
+                )
+                for entry in entries {
+                    let src = stagingUnzip.appendingPathComponent(entry)
+                    let dst = finalDir.appendingPathComponent(entry)
+                    try FileManager.default.copyItem(at: src, to: dst)
+                }
+            } catch {
+                try? FileManager.default.removeItem(at: finalDir)
+                throw ManagerError.installFailed(model, error)
+            }
         }
     }
 

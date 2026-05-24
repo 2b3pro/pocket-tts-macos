@@ -110,7 +110,13 @@ Both Single Voice and Multi-Talk views have an "AI Write" button that opens an L
 
 ## Building
 
-Clone, build, run — no extra setup. The repo ships with the 7 stock voice KV states, tokenizer, and vocab JSON committed under `pocket-tts-macos/Resources/`. The four heavy Core ML mlpackages (~500 MB) download from Hugging Face on first launch via `BundledMLModelManager`.
+Clone, build, run — no extra setup. The repo ships zero model weights; everything routes through `BundledMLModelManager`'s first-launch download. Six artifacts published under the `slaughters85j` HF namespace:
+
+  * `pocket-tts-coreml` — the four heavy Core ML mlpackages (~500 MB combined: `prompt_phase`, `calm_stateful`, `mimi_stateful`, `voice_prompt_phase`).
+  * `pocket-tts-stock-assets` — `tokenizer.model`, `tokenizer_vocab.json`, and the seven Kyutai voice KV state safetensors (~20 MB zipped, CC-BY 4.0).
+  * `pocket-tts-voice-tools` — `lavasr_enhancer_v2.safetensors` (LavaSR enhancement) + `mimi_encoder_weights.safetensors` (voice import) (~86 MB zipped, MIT / CC-BY 4.0).
+
+The `Resources/` folder is intentionally absent from the source tree — there is nothing to bundle. The first-launch sheet downloads everything, SHA-verifies each artifact, and installs under `~/Library/Containers/.../Application Support/pocket-tts-macos/coreml-models/`.
 
 ```bash
 # Build (Debug)
@@ -127,14 +133,14 @@ xcodebuild -project pocket-tts-macos.xcodeproj \
 
 ### Release archives
 
-The source tree's `Resources/voice_kv_states/` is stock-only by construction — `.gitignore` whitelists exactly the seven Kyutai voices, and custom voices live exclusively in the user's app container. So the archive workflow is just:
+Stock-only enforcement is now structural: nothing in `pocket-tts-macos/Resources/voice_kv_states/` is tracked, and custom voices live exclusively in the user's app container at `~/Library/Containers/<bundle-id>/Data/Library/Application Support/pocket-tts-macos/saved-voices/`. The archive workflow is:
 
 ```bash
 xcodebuild archive ...
 # sign + notarize
 ```
 
-No pre-archive strip step. Verify by listing `.app/Contents/Resources/*.safetensors` after building — should show only `alba`, `azelma`, `cosette`, `fantine`, `javert`, `jean`, `marius` alongside the `lavasr_*` and `mimi_encoder_*` model weights.
+No pre-archive strip step. On first launch the user sees a download sheet covering all five `BundledMLModel` cases (the four mlpackages plus the stock-assets bundle).
 
 ## Remaining Work
 

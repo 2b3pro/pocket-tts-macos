@@ -369,9 +369,21 @@ extension MimiEncoder {
     nonisolated static func load() throws -> MimiEncoder {
         let model = MimiEncoder()
 
-        guard let url = Bundle.main.url(forResource: "mimi_encoder_weights", withExtension: "safetensors") else {
-            throw NSError(domain: "MimiEncoder", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "mimi_encoder_weights.safetensors not found in bundle"])
+        // Phase 8.5: encoder weights ship via the voice-tools HF
+        // bundle, installed by `BundledMLModelManager` on first
+        // launch. `ModelPaths.mimiEncoderWeights()` resolves the
+        // installed copy, falling back to `Bundle.main` for a future
+        // re-bundled build.
+        let url: URL
+        do {
+            url = try ModelPaths.mimiEncoderWeights()
+        } catch {
+            throw NSError(
+                domain: "MimiEncoder", code: 1,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "mimi_encoder_weights.safetensors not installed " +
+                    "(voice-tools bundle must complete first-launch download)"]
+            )
         }
 
         var weights = try MLX.loadArrays(url: url)

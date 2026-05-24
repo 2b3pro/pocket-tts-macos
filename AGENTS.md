@@ -151,16 +151,6 @@ pocket-tts-macos/
 │   │   ├── LocalLLMClient.swift      (OpenAI-compatible local endpoint)
 │   │   ├── ScriptGenerator.swift
 │   │   └── SentenceDetector.swift
-│   ├── Resources/
-│   │   ├── mlpackages/
-│   │   │   ├── prompt_phase.mlpackage
-│   │   │   ├── calm_stateful.mlpackage      (fp32 compute)
-│   │   │   ├── mimi_stateful.mlpackage      (fp32 compute, 8192-slot KV cache)
-│   │   │   └── voice_prompt_phase.mlpackage (voice-import baker)
-│   │   ├── lavasr/                    (voice enhancement resources)
-│   │   ├── tokenizer.model
-│   │   ├── tokenizer_vocab.json
-│   │   └── voice_kv_states/*.safetensors    (stock-only; the 7 Kyutai voices)
 │   └── Assets.xcassets/
 ├── pocket-tts-macosTests/              (XCTest unit tests + fixtures + mocks)
 └── pocket-tts-macosUITests/
@@ -173,11 +163,12 @@ pocket-tts-macos/
 
 This trips up every fresh session. Keep them straight:
 
-**Bundled voices (read-only, ship with the app):**
-- Location: `pocket-tts-macos/Resources/voice_kv_states/*.safetensors` in source → `.app/Contents/Resources/*.safetensors` in the build
+**Bundled (stock) voices (read-only, runtime-downloaded since Phase 8):**
+- Location at runtime: `~/Library/Containers/<bundle-id>/Data/Library/Application Support/pocket-tts-macos/coreml-models/installed/stock_assets-v1/voice_kv_states/*.safetensors`
+- Source: published on `huggingface.co/slaughters85j/pocket-tts-stock-assets` as `stock_assets.zip`; downloaded + SHA-verified + installed by `BundledMLModelManager` alongside the four heavy mlpackages on first launch
 - Type: `BundledVoice` (in `Models/BundledVoice.swift`)
-- Catalog: built dynamically by `VoiceLoader.loadAll()` at engine init
-- Contents: stock-only — the seven Kyutai voices (`alba`, `azelma`, `cosette`, `fantine`, `javert`, `jean`, `marius`). `.gitignore` whitelists exactly these seven so an accidental drop of a custom voice into the source tree is excluded automatically.
+- Catalog: built dynamically by `VoiceLoader.loadAll()` at engine init, via `ModelPaths.allVoiceKVStateFiles()` (manager-installed first, `Bundle.main` fallback)
+- Contents: stock-only — the seven Kyutai voices (`alba`, `azelma`, `cosette`, `fantine`, `javert`, `jean`, `marius`). Nothing under `Resources/voice_kv_states/` is tracked in the repo, so custom voices physically cannot enter source.
 
 **Saved voices (user-imported, live in the sandbox container):**
 - Location: `~/Library/Containers/<bundle-id>/Data/Library/Application Support/pocket-tts-macos/saved-voices/`

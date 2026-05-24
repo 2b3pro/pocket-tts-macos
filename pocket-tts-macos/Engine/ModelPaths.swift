@@ -10,22 +10,24 @@ import Foundation
 // engine layer never hardcodes paths or string literals; everything resolves
 // through one of the static lookups below.
 //
-// Two resolution strategies live side-by-side here:
+// Same resolution strategy for everything: ask `BundledMLModelManager`
+// first (downloaded-from-HF + installed under Application Support); fall
+// back to `Bundle.main` if not yet installed.
 //
 //   * Core ML mlpackages (prompt_phase, calm_stateful, mimi_stateful,
-//     voice_prompt_phase) — Phase 8 moves these out of the .app bundle and
-//     into a runtime-downloaded location under Application Support, managed
-//     by `BundledMLModelManager`. The accessors below check the manager
-//     FIRST; if not yet installed, they fall back to the Bundle.main
-//     location so a future bundled build (if we ever ship one) keeps working
-//     unchanged.
+//     voice_prompt_phase) — published on
+//     `slaughters85j/pocket-tts-coreml`; compiled + installed as
+//     `<rawValue>.mlmodelc` under
+//     `installed/<rawValue>-v1/<rawValue>.mlmodelc/`.
 //
-//   * Tokenizer + voice KV states — these stay bundled. They're small
-//     (<10 MB combined), they're committed under Resources/ in the source
-//     tree, and Bundle.main is the only location they ever live at.
+//   * Stock assets (tokenizer.model, tokenizer_vocab.json, the seven
+//     stock voice KV state safetensors) — published on
+//     `slaughters85j/pocket-tts-stock-assets`; unzipped flat into
+//     `installed/stock_assets-v1/`. Same lifecycle, no compile step.
 //
-// Bundled assets under Resources/ are auto-included in the app target via
-// Xcode's PBXFileSystemSynchronizedRootGroup.
+// The Bundle.main fallback exists so a future build that chose to re-
+// bundle anything would keep working unchanged. Today the bundle is
+// empty for all of these — first launch is download-only.
 
 nonisolated enum ModelPaths {
     /// Resolution errors thrown when an expected asset is missing from
@@ -117,21 +119,60 @@ nonisolated enum ModelPaths {
         throw LookupError.mlpackageNotInstalled(model)
     }
 
-    // MARK: Tokenizer + voices
+    // MARK: Tokenizer + voices (stock assets bundle)
+    //
+    // The four accessors below all dispatch through `stockAssetsRoot()`.
+    // When the stock_assets HF bundle is installed, it returns the
+    // versioned install dir; the per-file paths below are joined onto
+    // it. When NOT installed, they fall back to `Bundle.main` — same
+    // dual-source pattern as the mlpackages above.
 
     static func tokenizerModel() throws -> URL {
-        try url(forResource: "tokenizer", withExtension: "model", subdirectory: nil)
+        if let root = stockAssetsRoot() {
+            return root.appendingPathComponent("tokenizer.model")
+        }
+        return try url(forResource: "tokenizer", withExtension: "model", subdirectory: nil)
+    }
+
+    /// `tokenizer_vocab.json` — the SentencePiece piece scores file
+    /// the tokenizer reads at init time. Same dual-source pattern as
+    /// `tokenizerModel()`. Added as an explicit accessor so call sites
+    /// don't go directly to `Bundle.main` and miss the runtime-install
+    /// path.
+    static func tokenizerVocab() throws -> URL {
+        if let root = stockAssetsRoot() {
+            return root.appendingPathComponent("tokenizer_vocab.json")
+        }
+        return try url(forResource: "tokenizer_vocab", withExtension: "json", subdirectory: nil)
     }
 
     /// URL for one voice's KV state safetensors file.
     static func voiceKVState(voiceID: String) throws -> URL {
-        try url(forResource: voiceID, withExtension: "safetensors", subdirectory: nil)
+        if let root = stockAssetsRoot() {
+            return root
+                .appendingPathComponent("voice_kv_states", isDirectory: true)
+                .appendingPathComponent("\(voiceID).safetensors")
+        }
+        return try url(forResource: voiceID, withExtension: "safetensors", subdirectory: nil)
     }
 
-    /// All `<id>.safetensors` files in the main bundle, sorted by id.
-    /// Used by VoiceLoader to build the catalog without a hardcoded list — any
-    /// voice file added at sync time shows up automatically.
+    /// All `<id>.safetensors` files for stock voices, sorted by id.
+    /// Used by VoiceLoader to build the catalog without a hardcoded
+    /// list — any voice file added at sync time shows up automatically.
+    /// Reads from the installed `voice_kv_states/` subdir when present;
+    /// falls back to `Bundle.main` otherwise (filtering out non-voice
+    /// safetensors like the lavasr / mimi_encoder model weights that
+    /// also live at the bundle root).
     static func allVoiceKVStateFiles() throws -> [URL] {
+        if let root = stockAssetsRoot() {
+            let voicesDir = root.appendingPathComponent("voice_kv_states", isDirectory: true)
+            let entries = (try? FileManager.default.contentsOfDirectory(
+                at: voicesDir, includingPropertiesForKeys: nil
+            )) ?? []
+            return entries
+                .filter { $0.pathExtension == "safetensors" }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        }
         guard let urls = Bundle.main.urls(forResourcesWithExtension: "safetensors", subdirectory: nil) else {
             throw LookupError.voiceDirectoryMissing
         }
@@ -142,7 +183,49 @@ nonisolated enum ModelPaths {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
+    // MARK: Voice-tools (LavaSR enhancement + Mimi encoder weights)
+    //
+    // Same dual-source pattern as the stock-assets accessors above:
+    // ask the manager first, fall back to `Bundle.main` lookup.
+    // Consumed by `VoiceEnhancer` (LavaSR safetensors) and the
+    // `MimiEncoder` actor (encoder weights for voice import).
+
+    /// LavaSR bandwidth-extension model used by the Enhancement
+    /// Studio. ~56 MB; lives at the install-dir root under the
+    /// `voice_tools-v1/` folder when the manager has installed it.
+    static func lavasrEnhancerWeights() throws -> URL {
+        if let root = voiceToolsRoot() {
+            return root.appendingPathComponent("lavasr_enhancer_v2.safetensors")
+        }
+        return try url(forResource: "lavasr_enhancer_v2", withExtension: "safetensors", subdirectory: nil)
+    }
+
+    /// Mimi encoder weights used by `MimiEncoder` when the user
+    /// imports a voice via the Voice Manager. ~73 MB; same dual-
+    /// source pattern as `lavasrEnhancerWeights()`.
+    static func mimiEncoderWeights() throws -> URL {
+        if let root = voiceToolsRoot() {
+            return root.appendingPathComponent("mimi_encoder_weights.safetensors")
+        }
+        return try url(forResource: "mimi_encoder_weights", withExtension: "safetensors", subdirectory: nil)
+    }
+
     // MARK: Private
+
+    /// Versioned install dir for the stock_assets HF bundle, or nil
+    /// if not yet downloaded. Defined as a static-`Manager` lookup so
+    /// the engine actor can call it without crossing MainActor
+    /// isolation. Symmetric with `resolveMLPackage`'s manager-first
+    /// pattern above.
+    private static func stockAssetsRoot() -> URL? {
+        BundledMLModelManager.compiledModelURL(for: .stockAssets)
+    }
+
+    /// Versioned install dir for the voice_tools HF bundle, or nil
+    /// if not yet downloaded.
+    private static func voiceToolsRoot() -> URL? {
+        BundledMLModelManager.compiledModelURL(for: .voiceTools)
+    }
 
     private static func url(forResource name: String, withExtension ext: String, subdirectory: String?) throws -> URL {
         if let u = Bundle.main.url(forResource: name, withExtension: ext, subdirectory: subdirectory) {
