@@ -111,14 +111,32 @@ final class VoiceEnhancer {
         try file.write(from: buffer)
     }
 
-    private static func rmsNormalize(_ samples: [Float], targetDB: Float) -> [Float] {
+    /// RMS-normalize a buffer to `targetDB` and apply a piecewise
+    /// soft-clip so the post-gain peaks fold gracefully toward ±1
+    /// instead of getting brick-wall clipped.
+    ///
+    /// The hard `min/max($0 * gain, -1, 1)` used pre-Phase-10 produced
+    /// audible digital clipping any time the enhancer's output had a
+    /// peak that crossed unity after the dB gain — exactly the
+    /// crunchy artifact users were hearing on the BWE output.
+    /// `AudioSoftClip` (shared with Phase 7's MultiSpeakerRevoicer
+    /// soft-clip) keeps in-range samples untouched (knee = 0.9) and
+    /// only shapes the overload region.
+    ///
+    /// `nonisolated` so tests can drive the curve without a MainActor
+    /// hop; the function is pure (no shared state).
+    nonisolated static func rmsNormalize(_ samples: [Float], targetDB: Float) -> [Float] {
         var sumSq: Float = 0
         for s in samples { sumSq += s * s }
         let rms = sqrt(sumSq / Float(samples.count))
         guard rms > 1e-8 else { return samples }
         let targetRMS = pow(10, targetDB / 20.0)
         let gain = targetRMS / rms
-        return samples.map { min(max($0 * gain, -1.0), 1.0) }
+        var scaled = samples
+        for i in 0..<scaled.count {
+            scaled[i] = AudioSoftClip.apply(scaled[i] * gain)
+        }
+        return scaled
     }
 
     // MARK: - Errors
