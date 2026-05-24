@@ -147,20 +147,74 @@ final class BundledMLModelManager {
     /// Production default location:
     /// `~/Library/Containers/<bundle-id>/Data/Library/Application
     /// Support/pocket-tts-macos/coreml-models/`.
-    static var defaultBaseDir: URL {
+    nonisolated static var defaultBaseDir: URL {
         FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("pocket-tts-macos", isDirectory: true)
             .appendingPathComponent("coreml-models", isDirectory: true)
     }
 
+    // MARK: - Static path lookup (production)
+    //
+    // The static accessors below mirror the instance methods of the
+    // same name but always use `defaultBaseDir`. They exist so
+    // `ModelPaths` (called from TTSEngine's actor isolation, NOT
+    // MainActor) can resolve mlmodelc URLs without an actor hop +
+    // without crossing the `@MainActor` boundary that the singleton
+    // `.shared` instance lives behind. Tests that need custom
+    // baseDir use the instance methods on their owned manager.
+
+    /// Static counterpart of the instance `compiledModelURL(for:)`.
+    /// Returns nil if the production install folder is missing or
+    /// empty. Production-only — tests use the instance method.
+    nonisolated static func compiledModelURL(for model: BundledMLModel) -> URL? {
+        let folder = expectedCompiledModelURL(for: model, baseDir: defaultBaseDir)
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: folder.path),
+              !entries.isEmpty else {
+            return nil
+        }
+        return folder
+    }
+
+    /// Static counterpart of `expectedCompiledModelURL(for:)` using
+    /// the production default base dir. No existence check.
+    nonisolated static func expectedCompiledModelURL(
+        for model: BundledMLModel,
+        baseDir: URL
+    ) -> URL {
+        baseDir.appendingPathComponent("installed", isDirectory: true)
+            .appendingPathComponent("\(model.rawValue)-\(installVersion)", isDirectory: true)
+            .appendingPathComponent("\(model.rawValue).mlmodelc", isDirectory: true)
+    }
+
+    /// Static `isReady` — production-only fast path used by AppState's
+    /// engine bootstrap gate. Tests with custom baseDir use the
+    /// instance property.
+    nonisolated static var isReady: Bool {
+        BundledMLModel.allCases.allSatisfy { compiledModelURL(for: $0) != nil }
+    }
+
     // MARK: - Public path API
+    //
+    // The three path lookups below are `nonisolated` because they
+    // touch only the file system + immutable `nonisolated let`
+    // properties. The engine's TTSEngine actor calls
+    // `ModelPaths.promptPhase()` from inside its own isolation
+    // domain (not MainActor); if these accessors required hopping
+    // to MainActor the bootstrap would deadlock. The trade-off
+    // for `nonisolated`: the file-system check is racy against a
+    // concurrent install — but install completes BEFORE the engine
+    // is allowed to bootstrap (AppState gates on `isReady`), so the
+    // race window is closed at the bootstrap layer.
 
     /// Compiled `.mlmodelc` URL for `model`, or nil if not yet
     /// installed. The non-empty check mirrors `isInstalled(_:)`
     /// so a stale empty-folder placeholder doesn't sneak past as
-    /// "installed" and trip Core ML at load time.
-    func compiledModelURL(for model: BundledMLModel) -> URL? {
+    /// "installed" and trip Core ML at load time. Tests with a
+    /// custom `baseDir` (per-test temp dir) use this instance
+    /// method; production code routes through the static
+    /// `BundledMLModelManager.compiledModelURL(for:)` instead.
+    nonisolated func compiledModelURL(for model: BundledMLModel) -> URL? {
         let folder = expectedCompiledModelURL(for: model)
         guard let entries = try? FileManager.default.contentsOfDirectory(atPath: folder.path),
               !entries.isEmpty else {
@@ -172,33 +226,32 @@ final class BundledMLModelManager {
     /// Where the `.mlmodelc` WOULD live if installed. Unconditional
     /// (no existence check) so call sites can plan paths during
     /// boot even when nothing is downloaded yet.
-    func expectedCompiledModelURL(for model: BundledMLModel) -> URL {
-        installedDir
-            .appendingPathComponent("\(model.rawValue)-\(Self.installVersion)", isDirectory: true)
-            .appendingPathComponent("\(model.rawValue).mlmodelc", isDirectory: true)
+    nonisolated func expectedCompiledModelURL(for model: BundledMLModel) -> URL {
+        Self.expectedCompiledModelURL(for: model, baseDir: baseDir)
+    }
+
+    /// `<rawValue>-v1` folder exists + contains a non-empty
+    /// mlmodelc. Mirrors `DemucsModelManager.isDownloaded`'s shape
+    /// (cheap, no MLModel load); used by `rescan` + `isReady` +
+    /// the @MainActor `installed` set's content.
+    nonisolated func isInstalled(_ model: BundledMLModel) -> Bool {
+        compiledModelURL(for: model) != nil
     }
 
     /// `true` when all four required models are installed on disk
     /// (compiled + non-empty). The engine boot gate.
-    var isReady: Bool {
+    nonisolated var isReady: Bool {
         BundledMLModel.allCases.allSatisfy { isInstalled($0) }
     }
 
     /// Models still missing from disk. The first-launch sheet
     /// iterates this set; what `downloadAndInstallAll` actually
     /// fetches.
-    var missing: [BundledMLModel] {
+    nonisolated var missing: [BundledMLModel] {
         BundledMLModel.allCases.filter { !isInstalled($0) }
     }
 
     // MARK: - Catalog reconciliation
-
-    /// `<rawValue>-v1` folder exists + contains a non-empty
-    /// mlmodelc. Mirrors `DemucsModelManager.isDownloaded`'s shape
-    /// (cheap, no MLModel load); used by `rescan` + `isReady`.
-    func isInstalled(_ model: BundledMLModel) -> Bool {
-        compiledModelURL(for: model) != nil
-    }
 
     /// Scan the install dir for known models. Cheap; one
     /// `contentsOfDirectory` per model.
