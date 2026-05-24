@@ -422,9 +422,22 @@ struct ContentView: View {
     @ViewBuilder
     private var voiceChangerSheetBody: some View {
         if appState.engine != nil {
-            let vm = voiceChangerVM ?? {
+            // Lazily create the VM on first sheet open and cache for
+            // the lifetime of the sheet. The cache write to `@State`
+            // is deferred to the next runloop tick so SwiftUI's
+            // "modifying state during view update" diagnostic stays
+            // quiet — the inline `?? { …; voiceChangerVM = new; return new }()`
+            // form mutates @State while the body is still being
+            // evaluated, which is undefined behavior per SwiftUI.
+            // Kept as an IIFE-typed `let` so ViewBuilder accepts it
+            // as a single declaration; an open `if let / else { … }`
+            // would leak `Void` into the view-building chain.
+            let vm: VoiceChangerViewModel = {
+                if let existing = voiceChangerVM { return existing }
                 let new = VoiceChangerViewModel(engine: appState.activeEngine)
-                voiceChangerVM = new
+                DispatchQueue.main.async {
+                    if voiceChangerVM == nil { voiceChangerVM = new }
+                }
                 return new
             }()
             VoiceChangerSheet(
@@ -456,16 +469,24 @@ struct ContentView: View {
     @ViewBuilder
     private var speakerIsolatorSheetBody: some View {
         if appState.engine != nil {
-            let vm = speakerIsolatorVM ?? {
-                // Phase 7: wire up the HTDemucs source separator at
-                // the EXPECTED install path (not the existence-
-                // checked `modelFolderURL`) so the VM always has
-                // `hasSourceSeparator == true` and the toggle is
-                // visible. The separator's own `isModelDownloaded()`
-                // probes the path at gate time, so an un-installed
-                // model still soft-falls back to v1 with the
-                // banner — no need to delay separator construction
-                // until after a download.
+            // Lazily create the VM on first sheet open and cache for
+            // the lifetime of the sheet. The cache write to `@State`
+            // is deferred to the next runloop tick so SwiftUI's
+            // "modifying state during view update" diagnostic stays
+            // quiet — see the matching block in voiceChangerSheetBody
+            // for the full rationale. Kept as an IIFE-typed `let` so
+            // ViewBuilder accepts it as a single declaration.
+            //
+            // Phase 7: wire up the HTDemucs source separator at the
+            // EXPECTED install path (not the existence-checked
+            // `modelFolderURL`) so the VM always has
+            // `hasSourceSeparator == true` and the toggle is visible.
+            // The separator's own `isModelDownloaded()` probes the
+            // path at gate time, so an un-installed model still
+            // soft-falls back to v1 with the banner — no need to
+            // delay separator construction until after a download.
+            let vm: SpeakerIsolatorViewModel = {
+                if let existing = speakerIsolatorVM { return existing }
                 let demucsPath = DemucsModelManager.shared
                     .expectedModelFolderURL(for: .htdemucs)
                 let separator = DemucsSourceSeparator(
@@ -476,7 +497,9 @@ struct ContentView: View {
                     engine: appState.activeEngine,
                     sourceSeparator: separator
                 )
-                speakerIsolatorVM = new
+                DispatchQueue.main.async {
+                    if speakerIsolatorVM == nil { speakerIsolatorVM = new }
+                }
                 return new
             }()
             SpeakerIsolatorSheet(

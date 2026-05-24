@@ -300,8 +300,7 @@ final class BundledMLModelManager {
     /// Idempotent — already-installed models are skipped at the
     /// per-model check inside the loop. Coalesces concurrent calls
     /// so a button mash doesn't spawn parallel runs.
-    @discardableResult
-    func downloadAndInstallAll() async throws -> Void {
+    func downloadAndInstallAll() async throws {
         if let existing = inflightBatch {
             return try await existing.value
         }
