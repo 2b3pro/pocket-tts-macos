@@ -110,11 +110,10 @@ Both Single Voice and Multi-Talk views have an "AI Write" button that opens an L
 
 ## Building
 
-```bash
-# 1. Sync models + tokenizer + voice KV states into Resources/
-./scripts/sync-assets.sh
+Clone, build, run — no extra setup. The repo ships with the 7 stock voice KV states, tokenizer, and vocab JSON committed under `pocket-tts-macos/Resources/`. The four heavy Core ML mlpackages (~500 MB) download from Hugging Face on first launch via `BundledMLModelManager`.
 
-# 2. Build (Debug)
+```bash
+# Build (Debug)
 xcodebuild -project pocket-tts-macos.xcodeproj \
     -scheme pocket-tts-macos \
     -destination 'platform=macOS' \
@@ -128,10 +127,9 @@ xcodebuild -project pocket-tts-macos.xcodeproj \
 
 ### Release archives
 
-The source tree's `Resources/voice_kv_states/` is stock-only by construction — `sync-assets.sh` only copies the seven Kyutai voices, and custom voices live exclusively in the user's app container. So the archive workflow is just:
+The source tree's `Resources/voice_kv_states/` is stock-only by construction — `.gitignore` whitelists exactly the seven Kyutai voices, and custom voices live exclusively in the user's app container. So the archive workflow is just:
 
 ```bash
-./scripts/sync-assets.sh
 xcodebuild archive ...
 # sign + notarize
 ```

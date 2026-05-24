@@ -4,11 +4,8 @@
 //
 //  @MainActor @Observable singleton owning the on-disk lifecycle
 //  for the four `.mlpackage` artifacts the engine needs to
-//  synthesize. Before this manager existed those four packages
-//  were bundled into the .app at build time by
-//  `scripts/sync-assets.sh`; the runtime-download flow drops the
-//  ~500 MB hit from the App Store binary in exchange for a
-//  one-time first-launch fetch.
+//  synthesize. Downloads from HF on first launch, drops ~500 MB
+//  from the App Store binary in exchange for a one-time fetch.
 //
 //  Shape parallels `DemucsModelManager` but with different
 //  semantics:

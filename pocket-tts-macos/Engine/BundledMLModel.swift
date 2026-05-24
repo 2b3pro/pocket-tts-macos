@@ -6,11 +6,8 @@
 //  needs to synthesize. Hosted on Hugging Face under
 //  `slaughters85j/pocket-tts-coreml`; downloaded + SHA-verified +
 //  compiled to `.mlmodelc` on first launch by
-//  `BundledMLModelManager`. Before this catalog existed these
-//  artifacts were bundled into the .app at build time by
-//  `scripts/sync-assets.sh`; the runtime-download flow drops the
-//  ~500 MB hit from the App Store binary in exchange for a
-//  one-time first-launch fetch.
+//  `BundledMLModelManager`. Drops ~500 MB from the App Store
+//  binary in exchange for a one-time first-launch fetch.
 //
 //  Each case carries everything the manager needs to decide
 //  "this artifact is the one I expect":

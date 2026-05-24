@@ -17,16 +17,15 @@ import Foundation
 //     into a runtime-downloaded location under Application Support, managed
 //     by `BundledMLModelManager`. The accessors below check the manager
 //     FIRST; if not yet installed, they fall back to the Bundle.main
-//     location so that a build that still bundles them (legacy / dev with
-//     sync-assets.sh populated Resources/) keeps working unchanged.
+//     location so a future bundled build (if we ever ship one) keeps working
+//     unchanged.
 //
 //   * Tokenizer + voice KV states — these stay bundled. They're small
-//     (<10 MB combined), they ship with the app, and Bundle.main is the
-//     only location they ever live at.
+//     (<10 MB combined), they're committed under Resources/ in the source
+//     tree, and Bundle.main is the only location they ever live at.
 //
-// Bundled assets land under Resources/ via scripts/sync-assets.sh and are
-// auto-included in the app target via Xcode's
-// PBXFileSystemSynchronizedRootGroup.
+// Bundled assets under Resources/ are auto-included in the app target via
+// Xcode's PBXFileSystemSynchronizedRootGroup.
 
 nonisolated enum ModelPaths {
     /// Resolution errors thrown when an expected asset is missing from
@@ -58,8 +57,8 @@ nonisolated enum ModelPaths {
     // Each accessor follows the same pattern:
     //   1. Ask BundledMLModelManager — already downloaded?
     //   2. If yes, return the Application Support URL.
-    //   3. If no, look in Bundle.main (sync-assets.sh path, legacy
-    //      builds, App Store builds that still bundle).
+    //   3. If no, look in Bundle.main (a future build that chose to
+    //      re-bundle the mlpackage would land here).
     //   4. If neither, throw `.mlpackageNotInstalled`.
     //
     // The manager-first ordering matters: once a user has downloaded a
@@ -107,7 +106,7 @@ nonisolated enum ModelPaths {
         if let downloaded = BundledMLModelManager.compiledModelURL(for: model) {
             return downloaded
         }
-        // 2) Bundled copy (sync-assets.sh / legacy builds).
+        // 2) Bundled copy (a future build that chose to re-bundle).
         if let bundled = Bundle.main.url(
             forResource: bundleName, withExtension: "mlmodelc", subdirectory: nil
         ) {

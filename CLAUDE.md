@@ -179,7 +179,7 @@ This trips up every fresh session. Keep them straight:
 - Location: `pocket-tts-macos/Resources/voice_kv_states/*.safetensors` in source → `.app/Contents/Resources/*.safetensors` in the build
 - Type: `BundledVoice` (in `Models/BundledVoice.swift`)
 - Catalog: built dynamically by `VoiceLoader.loadAll()` at engine init
-- Contents: stock-only — the seven Kyutai voices (`alba`, `azelma`, `cosette`, `fantine`, `javert`, `jean`, `marius`). `sync-assets.sh` is filtered to enforce this.
+- Contents: stock-only — the seven Kyutai voices (`alba`, `azelma`, `cosette`, `fantine`, `javert`, `jean`, `marius`). `.gitignore` whitelists exactly these seven so an accidental drop of a custom voice into the source tree is excluded automatically.
 
 **Saved voices (user-imported, live in the sandbox container):**
 - Location: `~/Library/Containers/<bundle-id>/Data/Library/Application Support/pocket-tts-macos/saved-voices/`
@@ -393,10 +393,9 @@ with the pre-Phase-8 offline-first behavior.
   resolve URLs from inside TTSEngine's actor isolation without
   crossing the MainActor boundary.
 - `ModelPaths` follows a dual-source resolution:
-  downloaded-first, bundle-fallback. A build that still bundles
-  the mlpackages (legacy sync-assets.sh runs) keeps working
-  unchanged; the bundle copy "wins" only when the download set
-  is empty.
+  downloaded-first, bundle-fallback. A future build that chose
+  to re-bundle the mlpackages would keep working unchanged; the
+  bundle copy "wins" only when the download set is empty.
 - `AppState.bootstrapIfNeeded` is gated on
   `BundledMLModelManager.isReady` BEFORE constructing
   `TTSEngine`. Missing models surface as
