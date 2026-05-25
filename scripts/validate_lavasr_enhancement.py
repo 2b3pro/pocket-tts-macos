@@ -160,12 +160,18 @@ def run_full_pipeline(
     dump("bwe_predicted_audio_48k", pred_audio)
 
     # 6) FastLRMerge — blend low from input + high from BWE.
-    #    Note: model.bwe_model.lr_refiner is constructed by `load_audio()`
-    #    in the production path; for our direct call we use the default
-    #    (cutoff=4 kHz, transition=256 bins, sample_rate=48 kHz).
+    #    The production path constructs lr_refiner inside
+    #    `model.load_audio()`:
+    #
+    #        cutoff = input_sr // 2  # 16000 // 2 = 8000
+    #        FastLRMerge(device=..., cutoff=cutoff, transition_bins=1024)
+    #
+    #    NOT the FastLRMerge() defaults (cutoff=4000, transition=256).
+    #    Match the production values here so the dumps reflect what
+    #    enhance-voice.py actually produces.
     print(f"  [{name}] running FastLRMerge refiner ...")
     from LavaSR.enhancer.linkwitz_merge import FastLRMerge
-    lr_refiner = FastLRMerge(sample_rate=48_000, cutoff=4_000, transition_bins=256, device="cpu")
+    lr_refiner = FastLRMerge(sample_rate=48_000, cutoff=8_000, transition_bins=1024, device="cpu")
     with torch.no_grad():
         a = pred_audio[:, : bwe_input_48k.shape[1]].float()
         b = bwe_input_48k[:, : pred_audio.shape[1]].float()

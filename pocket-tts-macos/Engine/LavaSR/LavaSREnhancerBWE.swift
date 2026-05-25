@@ -46,12 +46,15 @@ final class LavaSREnhancerBWE: Module {
     private nonisolated static let hopLength = 512
     private nonisolated static let nMels = 80
 
-    /// Operating sample rate. The upstream config.yaml says 44100 but the
-    /// production Python pipeline (LavaEnhance2) resamples to 48 kHz before
-    /// feeding this model — the mel filterbank is parameterized in Hz, so
-    /// the model is robust to SR mismatch at inference time. Commit 2
-    /// flips this to 48000.
-    nonisolated static let sampleRate = 44100
+    /// Operating sample rate. The upstream `enhancer_v2/config.yaml`
+    /// declares 44100, but the production Python pipeline
+    /// (`LavaEnhance2.enhance(...)`) resamples to 48 kHz before feeding
+    /// this model. The mel filterbank is parameterized in Hz
+    /// (`f_min=0, f_max=8000`), so the model runs at the higher SR
+    /// without any change in computed mel coefficients. Running here
+    /// at 48 kHz matches the Python reference and is the upstream
+    /// author's intended operating point.
+    nonisolated static let sampleRate = 48_000
 
     nonisolated(unsafe) var melFilterbank: MLXArray?
     nonisolated(unsafe) var stftWindow: MLXArray?

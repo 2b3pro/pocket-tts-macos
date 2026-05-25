@@ -38,17 +38,26 @@ final class LavaSRPipeline {
     /// Vocos BWE model. Loaded once during `load()`.
     private let bwe: LavaSREnhancerBWE
 
-    /// Sample rate the pipeline currently operates at. Today this matches
-    /// the BWE's configured rate (44.1 kHz). Commit 2 introduces a
-    /// resample stage and the pipeline's output SR becomes 48 kHz while
-    /// the input continues to come in at 16 kHz; Commit 6 wires the
-    /// inputs to the production 16 kHz convention.
+    /// Frequency-domain crossover refiner — see LavaSRFastLRMerge.
+    /// Production parameters match `LavaEnhance.load_audio()` in the
+    /// upstream Python:  cutoff = 8000 Hz, transition = 1024 bins.
+    private let lrMerge: LavaSRFastLRMerge
+
+    /// Sample rate the pipeline operates at end-to-end (input AND
+    /// output). Matches `LavaSREnhancerBWE.sampleRate` so the BWE
+    /// receives audio at its trained operating point.
+    ///
+    /// Phase 10 / Commit 6 introduces a separate `inputSampleRate` of
+    /// 16 kHz (denoiser's domain) with an internal 16 → 48 kHz resample
+    /// before the BWE stage. Today's path expects callers to provide
+    /// audio already at this SR.
     var sampleRate: Int { LavaSREnhancerBWE.sampleRate }
 
     // MARK: - Init / load
 
-    private init(bwe: LavaSREnhancerBWE) {
+    private init(bwe: LavaSREnhancerBWE, lrMerge: LavaSRFastLRMerge) {
         self.bwe = bwe
+        self.lrMerge = lrMerge
     }
 
     /// Bootstrap the pipeline: load every required model from
@@ -58,20 +67,48 @@ final class LavaSRPipeline {
     /// touching `VoiceEnhancer`.
     static func load() async throws -> LavaSRPipeline {
         let bwe = try await LavaSREnhancerBWE.load()
-        return LavaSRPipeline(bwe: bwe)
+        let lr = LavaSRFastLRMerge(
+            sampleRate: LavaSREnhancerBWE.sampleRate,
+            cutoff: 8_000,
+            transitionBins: 1024
+        )
+        return LavaSRPipeline(bwe: bwe, lrMerge: lr)
     }
 
     // MARK: - Enhance
 
     /// Run the full enhancement pipeline on a mono Float32 buffer.
-    /// `samples` is expected to be at the pipeline's input SR
-    /// (`sampleRate` today; 16 kHz after Commit 6 once the denoiser
-    /// stage is wired). Returns the enhanced buffer.
+    /// `samples` is expected to be at `sampleRate` (48 kHz). Returns
+    /// the enhanced buffer at the same SR.
+    ///
+    /// Stages (matches `LavaSR.enhancer.LavaBWE.infer` in the upstream
+    /// Python):
+    ///
+    ///   1. BWE forward: mel → ConvNeXt → ISTFT head.
+    ///   2. Length align: truncate both BWE output and the original
+    ///      input to whichever is shorter (matches the Python
+    ///      `pred_audio[:, :wav.shape[1]]` / `wav[:, :pred_audio.shape[1]]`
+    ///      truncation inside `LavaBWE.infer`).
+    ///   3. FastLRMerge: low freqs from input + high freqs from BWE.
+    ///      Smoothstep transition centered at 8 kHz.
     func enhance(_ samples: [Float]) throws -> [Float] {
         let input = MLXArray(samples)
-        let enhanced = try bwe.enhance(input)
-        eval(enhanced)
-        return enhanced.asArray(Float.self)
+
+        // Stage 1 — BWE.
+        let bweOutput = try bwe.enhance(input)
+        eval(bweOutput)
+
+        // Stage 2 — length align.
+        let inputLen = input.shape[0]
+        let bweLen = bweOutput.shape[0]
+        let n = min(inputLen, bweLen)
+        let a = bweLen == n ? bweOutput : bweOutput[0..<n]
+        let b = inputLen == n ? input : input[0..<n]
+
+        // Stage 3 — LR-merge.
+        let merged = lrMerge.merge(a: a, b: b)
+        eval(merged)
+        return merged.asArray(Float.self)
     }
 
     // MARK: - Teardown
