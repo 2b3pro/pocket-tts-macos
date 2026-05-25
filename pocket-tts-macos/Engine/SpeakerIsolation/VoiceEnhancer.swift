@@ -40,15 +40,20 @@ final class VoiceEnhancer {
 
     // MARK: - Bootstrap
 
-    func bootstrapIfNeeded() async {
+    /// Bootstrap the LavaSR pipeline. If `denoiserMLPackageURL` is
+    /// provided AND exists on disk, the pipeline includes the ULUNAS
+    /// denoiser. Otherwise it soft-falls-back to BWE + LR-merge only.
+    func bootstrapIfNeeded(denoiserMLPackageURL: URL? = nil) async {
         guard status == .idle else { return }
         status = .loading
 
         do {
-            let pipeline = try await LavaSRPipeline.load()
+            let pipeline = try await LavaSRPipeline.load(
+                denoiserMLPackageURL: denoiserMLPackageURL
+            )
             self.pipeline = pipeline
             status = .ready
-            print("[VoiceEnhancer] pipeline loaded")
+            print("[VoiceEnhancer] pipeline loaded (denoiser: \(pipeline.hasDenoiser))")
         } catch {
             status = .error(String(describing: error))
             print("[VoiceEnhancer] failed to load: \(error)")
@@ -57,18 +62,32 @@ final class VoiceEnhancer {
 
     // MARK: - Enhance
 
-    func enhance(inputURL: URL, outputURL: URL) async throws {
+    /// Run the enhancement pipeline. If the pipeline was bootstrapped
+    /// with a denoiser AND `denoise` is true, ULUNAS runs as the first
+    /// stage; otherwise the v1 BWE+LR-merge-only path runs.
+    ///
+    /// Input file can be any sample rate / channel count — the pipeline
+    /// loads at 16 kHz mono (the denoiser's native SR) and resamples
+    /// internally. Output is at 48 kHz (the BWE's output SR).
+    func enhance(inputURL: URL, outputURL: URL, denoise: Bool = true) async throws {
         guard let pipeline else {
             throw EnhancerError.notLoaded
         }
 
         status = .enhancing
 
-        let samples = try Self.loadAudio(url: inputURL, targetRate: pipeline.sampleRate)
-        print("[VoiceEnhancer] loaded \(samples.count) samples @ \(pipeline.sampleRate)Hz")
+        // Load at 16 kHz mono — the denoiser's native rate. Pipeline
+        // resamples internally to 48 kHz for the BWE stage if the
+        // denoiser is enabled, OR resamples 16k → 48k directly if the
+        // denoiser is bypassed.
+        let inputRate = LavaSRDenoiser.sampleRate
+        let samples = try Self.loadAudio(url: inputURL, targetRate: inputRate)
+        print("[VoiceEnhancer] loaded \(samples.count) samples @ \(inputRate)Hz")
 
-        let enhanced = try pipeline.enhance(samples)
-        print("[VoiceEnhancer] enhanced → \(enhanced.count) samples")
+        let enhanced = try await pipeline.enhance(
+            samples, inputRate: inputRate, denoise: denoise && pipeline.hasDenoiser
+        )
+        print("[VoiceEnhancer] enhanced → \(enhanced.count) samples @ \(pipeline.sampleRate)Hz")
 
         let normalized = Self.rmsNormalize(enhanced, targetDB: -16.0)
 
@@ -83,6 +102,7 @@ final class VoiceEnhancer {
     }
 
     var isReady: Bool { status == .ready }
+    var hasDenoiser: Bool { pipeline?.hasDenoiser ?? false }
 
     // MARK: - Audio I/O
 
