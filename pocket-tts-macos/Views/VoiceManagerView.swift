@@ -47,6 +47,14 @@ struct VoiceManagerView: View {
     @State private var voiceToDelete: Voice?
     @State private var encodingComplete = false
 
+    /// `true` when the user entered Enhancement Studio via the
+    /// inline-row "Enhance" badge (re-enhancing an existing voice)
+    /// rather than via the new-voice import flow. Drives the divergent
+    /// reject behavior: import-reject deletes the whole voice;
+    /// re-enhance-reject just drops the enhancement WAV + flips
+    /// `isEnhanced` back to false (the voice itself stays).
+    @State private var isReEnhanceMode: Bool = false
+
     // Orphan recovery state (step 5). Populated on appear; UI section
     // only renders when non-empty.
     @State private var orphans: [OrphanedVoice] = []
@@ -145,6 +153,7 @@ struct VoiceManagerView: View {
         savedVoiceID = nil
         encodingComplete = false
         importError = nil
+        isReEnhanceMode = false
     }
 
     private func verifyAndEncodeVoices() async {
@@ -557,6 +566,12 @@ struct VoiceManagerView: View {
         HStack(spacing: Theme.space3) {
             Text(voice.name).font(Theme.fontSM).foregroundStyle(Theme.textPrimary).lineLimit(1)
             Spacer()
+            // Enhancement state: green "Enhanced" badge if done, orange
+            // clickable "Enhance" badge to kick off the LavaSR pipeline
+            // if not. Pulled out of `statusBadges` because the click
+            // target + colored styling don't fit the plain-string
+            // badge model.
+            enhancementBadge(voice)
             ForEach(statusBadges(voice), id: \.self) { badge in
                 Text(badge).font(.system(size: 10)).foregroundStyle(Theme.textSecondary)
                     .padding(.horizontal, 6).padding(.vertical, 2)
@@ -568,6 +583,64 @@ struct VoiceManagerView: View {
         }
         .padding(.horizontal, Theme.space3).padding(.vertical, Theme.space2)
         .background(Theme.bgTertiary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
+    }
+
+    /// LavaSR enhancement badge for the inline voice row.
+    /// Two states:
+    ///   * `voice.isEnhanced == true`  → green "Enhanced" (static label)
+    ///   * otherwise                     → orange "Enhance" (clickable)
+    ///
+    /// Click on the orange badge routes into the existing Enhancement
+    /// Studio state machine via `enterEnhancementStudio(for:)` — same
+    /// screens the import flow uses (settings → enhancing → comparison →
+    /// accept / reject). The Enhanced Studio handles polling, the
+    /// comparison A/B audition, and the catalog refresh that ripples
+    /// through to the ✨ sparkle on enhanced-voice pickers
+    /// (`ChatSettingsView`, `SpeakerRow`).
+    @ViewBuilder
+    private func enhancementBadge(_ voice: Voice) -> some View {
+        if voice.isEnhanced {
+            Text("Enhanced")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(Theme.successFG)
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(Theme.successFG.opacity(0.18))
+                .clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
+        } else {
+            Button(action: { enterEnhancementStudio(for: voice.id) }) {
+                Text("Enhance")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Theme.warningFG)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Theme.warningFG.opacity(0.18))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.radiusSmall))
+            }
+            .buttonStyle(.plain)
+            .help("Open Enhancement Studio for this voice")
+        }
+    }
+
+    /// Open the Enhancement Studio for an EXISTING voice (not a fresh
+    /// import). Sets `savedVoiceID` so `runEnhancement()` and the
+    /// comparison-screen state machine pick up the right ID, then
+    /// jumps `importStep` to `.enhancementSettings`. From there the
+    /// user gets the same screens the new-voice import flow shows:
+    /// tweak denoise + RMS → click Enhance → see "Enhancing..." →
+    /// land on `.comparison` → audition original vs enhanced → accept
+    /// or reject. Skipping our own polling here is intentional —
+    /// `pollForCompletion(voiceID:)` already does the right thing
+    /// inside the modal flow.
+    private func enterEnhancementStudio(for voiceID: String) {
+        savedVoiceID = voiceID
+        // Restore the voice's persisted RMS target so the slider
+        // shows the same value the user saw last time (and so the
+        // unchanged-slider case still re-uses their preferred level).
+        if let voice = VoiceManager.shared.voice(for: voiceID) {
+            rmsTargetDB = voice.rmsTargetDB ?? -16.0
+        }
+        encodingComplete = false
+        isReEnhanceMode = true
+        importStep = .enhancementSettings
     }
 
     // MARK: - Orphan recovery (step 5)
@@ -678,7 +751,8 @@ struct VoiceManagerView: View {
 
     private func statusBadges(_ voice: Voice) -> [String] {
         var b: [String] = []
-        if voice.isEnhanced { b.append("Enhanced") }
+        // "Enhanced" is rendered by `enhancementBadge(_:)` with its
+        // own green styling + clickable variant. Don't double up here.
         if voice.cachedCodesPath != nil && voice.pocketTTSKVPath != nil { b.append("Ready") }
         else if voice.cachedCodesPath != nil || voice.pocketTTSKVPath != nil { b.append("Partial") }
         else { b.append("Pending") }
@@ -771,8 +845,18 @@ struct VoiceManagerView: View {
     private func rejectEnhancement() {
         guard let voiceID = savedVoiceID else { return }
         stopPlayback()
-        // Delete the entire voice — user rejected it
-        VoiceManager.shared.deleteVoice(id: voiceID)
+        if isReEnhanceMode {
+            // Re-enhance path: drop just the enhancement WAV + flip
+            // `isEnhanced` back to false. The voice itself stays in
+            // the catalog — user wanted to redo the enhancement, didn't
+            // like it, gets to keep their original voice intact.
+            VoiceManager.shared.clearEnhancement(for: voiceID)
+        } else {
+            // Import-flow reject: the user just imported this voice
+            // AND auditioned the enhancement; rejecting scraps the
+            // whole voice. Same behavior as before.
+            VoiceManager.shared.deleteVoice(id: voiceID)
+        }
         resetImport()
     }
 

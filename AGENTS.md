@@ -81,29 +81,73 @@ pocket-tts-macos/
 │   │   ├── BundledVoice.swift        (stock voice catalog entry)
 │   │   └── ChatModels.swift
 │   ├── Engine/
-│   │   ├── TTSEngine.swift           (Core ML synthesis orchestrator)
-│   │   ├── TTSEngineProtocol.swift   (testable engine surface)
-│   │   ├── Tokenizer.swift           (SentencePiece wrapper)
-│   │   ├── VoiceLoader.swift         (safetensors → MLMultiArray)
-│   │   ├── VoiceManager.swift        (saved-voices/ catalog + import + orphan recovery)
-│   │   ├── FluidAudioSTT.swift         (Parakeet transcription backend)
-│   │   ├── SpeakerIsolator.swift     (segment-based speaker extraction)
-│   │   ├── SpeakerKitDiarizationProvider.swift
-│   │   ├── MultiSpeakerRevoicer.swift
-│   │   ├── AudioFileLoader.swift     (decode mono/stereo inputs)
-│   │   ├── AudioBuffer.swift
-│   │   ├── SourceSeparator.swift     (Phase 7 separation protocol)
-│   │   ├── DemucsSourceSeparator.swift
-│   │   ├── DemucsChunker.swift
-│   │   ├── DemucsModelManager.swift
-│   │   ├── DemucsModelInstaller.swift
-│   │   ├── DemucsZipExtractor.swift
-│   │   ├── DemucsModelVariant.swift
-│   │   ├── DemucsStemMap.swift
-│   │   ├── DemucsResampler.swift
-│   │   ├── SeparatedStems.swift
-│   │   ├── VideoMuxer.swift
-│   │   └── ModelPaths.swift          (bundle-resource resolution)
+│   │   ├── TTS/
+│   │   │   ├── TTSEngine.swift           (Core ML synthesis orchestrator)
+│   │   │   ├── TTSEngineProtocol.swift   (testable engine surface)
+│   │   │   ├── Tokenizer.swift           (SentencePiece wrapper)
+│   │   │   ├── SentencePieceTokenizer.swift
+│   │   │   ├── VoiceLoader.swift         (safetensors → MLMultiArray)
+│   │   │   ├── VoiceManager.swift        (saved-voices/ catalog + import + orphan recovery)
+│   │   │   ├── ModelPaths.swift          (bundle-resource resolution)
+│   │   │   ├── BundledMLModel.swift
+│   │   │   ├── BundledMLModelManager.swift
+│   │   │   ├── BundledMLModelManagerTypes.swift
+│   │   │   ├── FishEngine.swift
+│   │   │   ├── MimiEncoder.swift
+│   │   │   ├── PocketTTSVoiceEncoder.swift
+│   │   │   └── SynthesisCancellation.swift
+│   │   ├── Demucs/
+│   │   │   ├── DemucsSourceSeparator.swift
+│   │   │   ├── DemucsChunker.swift
+│   │   │   ├── DemucsResampler.swift
+│   │   │   ├── DemucsStemMap.swift
+│   │   │   ├── DemucsModelManager.swift
+│   │   │   ├── DemucsModelManagerTypes.swift
+│   │   │   ├── DemucsModelInstaller.swift
+│   │   │   ├── DemucsModelVariant.swift
+│   │   │   ├── DemucsZipExtractor.swift
+│   │   │   ├── SourceSeparator.swift     (separation protocol)
+│   │   │   └── SeparatedStems.swift
+│   │   ├── STT/
+│   │   │   ├── FluidAudioSTT.swift       (Parakeet transcription backend)
+│   │   │   ├── SpeechFrameworkSTT.swift
+│   │   │   ├── STTProvider.swift
+│   │   │   ├── DictationController.swift
+│   │   │   ├── TranscribedSegment.swift
+│   │   │   ├── DiarizedSegment.swift
+│   │   │   ├── DiarizationProvider.swift
+│   │   │   └── FluidAudioDiarizationProvider.swift
+│   │   ├── Audio/
+│   │   │   ├── AudioBuffer.swift
+│   │   │   ├── AudioFileLoader.swift     (decode mono/stereo inputs)
+│   │   │   ├── AudioPreconditioner.swift
+│   │   │   ├── AudioSoftClip.swift
+│   │   │   ├── WSOLATimeCompressor.swift
+│   │   │   ├── VoiceLevel.swift
+│   │   │   ├── VideoMuxer.swift
+│   │   │   └── TimelineAlignedRenderer.swift
+│   │   ├── TextProcessing/
+│   │   │   ├── TextNormalizer.swift
+│   │   │   ├── TextNormalizer+Data.swift
+│   │   │   ├── TextNormalizer+DomainTerms.swift
+│   │   │   ├── TextNormalizer+Units.swift
+│   │   │   ├── TextPreprocessor.swift
+│   │   │   ├── NumberToWords.swift
+│   │   │   ├── MultiTalkScriptParser.swift
+│   │   │   └── SilencePreservingScriptBuilder.swift
+│   │   ├── SpeakerIsolation/
+│   │   │   ├── SpeakerIsolator.swift     (segment-based speaker extraction)
+│   │   │   ├── MultiSpeakerRevoicer.swift
+│   │   │   ├── VoiceChangerPipeline.swift
+│   │   │   └── VoiceEnhancer.swift
+│   │   ├── LavaSR/
+│   │   │   ├── LavaSRPipeline.swift
+│   │   │   ├── LavaSREnhancerBWE.swift
+│   │   │   ├── LavaSRFastLRMerge.swift
+│   │   │   ├── LavaSRISTFTHead.swift
+│   │   │   └── LavaSRDenoiserModules.swift
+│   │   └── Utilities/
+│   │       └── BackoffPolicy.swift
 │   ├── Audio/
 │   │   ├── StreamingPlayer.swift     (AVAudioEngine source node)
 │   │   ├── WAVEncoder.swift
@@ -265,49 +309,3 @@ This is **not** a Ubiquitous Analytics project. The UA brand-token rule does not
 - Don't introduce a new pattern or library to "fix" something — first exhaust the existing pattern, then propose replacement
 - Don't make changes unrelated to the task at hand
 - Keep an eye on impact across `Engine/`, `Audio/`, and `Views/` whenever the public API of `TTSEngine` shifts
-
----
-
-## Hard rules — do NOT
-
-- ❌ Re-download model weights — they're already in `~/.cache/huggingface/hub/`
-- ❌ Add a Python runtime / PyInstaller / `subprocess` to this app — the whole point is to escape Python
-- ❌ Bundle `calm_step.mlpackage` or `mimi_decoder.mlpackage` (dev artifacts only)
-- ❌ Hardcode bundle paths — use `Bundle.main.url(forResource:withExtension:)` via `ModelPaths.swift`
-- ❌ Add CoreData (we use SwiftData)
-- ❌ Touch `Item.swift` from the Xcode default template — delete it once `DataModels.swift` lands
-
----
-
-## Decisions locked
-
-| Question | Answer |
-|----------|--------|
-| Fresh project vs extend menu bar | **Fresh** (this repo). Menu bar (`macos-service/`) stays separate. |
-| Python backend fallback | **No.** Core ML only. |
-| Voice cloning in v1 | **Yes** (shipped in v1.0). Via the in-app Voice Manager → saved-voices/ container. |
-| ChatLLM backend | **Local LLM Endpoint** — generic OpenAI-compatible HTTP (LM Studio, Ollama, llama.cpp server, vLLM, LocalAI). Base URL persisted in SwiftData; default `http://localhost:1234/v1`. |
-| iOS in v1 | **No.** Possibly v2 after macOS stabilizes. |
-| Default voice | TBD — caller's choice. Plan to default to `cosette` until UI persists last-used. |
-| Audio export formats | **WAV + AAC + MP3** |
-
----
-
-## Phase tracking
-
-See `pocket-tts-macos/road-map.md` for the canonical phased plan with hour estimates.
-
-Quick status:
-
-- [x] Phase −1: project bootstrap (Xcode project, git, GitHub remote, road-map, AGENTS.md)
-- [x] Phase 0a — voice KV state precompute completed for the 7 stock voices (T_voice 125–161 per voice)
-- [x] Phase 0b — `prompt_phase.mlpackage` converted, 140 MB, validated against PyTorch at 1.84% worst K rel-err (passing 5% threshold). Notable: ANE compile rejects multi-position SDPA; runs CPU+GPU
-- [x] Phase 0c — Swift engine: Tokenizer, VoiceLoader, TTSEngine + Xcode project scaffolding
-- [x] Phase 0d — end-to-end Swift unit test (text → wav, no Python)
-- [x] Phase 1: streaming audio (StreamingPlayer, WAVEncoder, AAC/MP3 encoder)
-- [x] Phase 2: MVP SwiftUI shell (single-voice mode → v0.1 shippable)
-- [x] Phase 3: MultiTalk + History (SwiftData)
-- [x] Phase 4: LM Studio chat
-- [x] Phase 5: Orb (Metal shader port)
-- [ ] Phase 6: polish, signing, notarization, Sparkle, DMG
-- [ ] Deferred v2: EnhancementStudio, AudioCompare, iOS variant
