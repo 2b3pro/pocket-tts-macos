@@ -26,21 +26,60 @@ struct SingleVoiceView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             HStack(alignment: .top, spacing: Theme.space6) {
-                // Left sidebar
+                // Left sidebar — config panels scroll, primary action is
+                // pinned. Synthesize + status + result player live in a fixed
+                // footer so they stay on screen no matter how tall the
+                // scrolling content grows on a short window; the secondary
+                // "Change Voice" action scrolls with the config. The editor on
+                // the right scrolls internally via its own NSScrollView.
                 VStack(spacing: Theme.space4) {
-                    BackendSelector(
-                        activeBackend: $chatSettings.activeBackend,
-                        fishParams: $chatSettings.fishParams,
-                        disabled: viewModel.status.isWorking
-                    )
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(spacing: Theme.space4) {
+                            BackendSelector(
+                                activeBackend: $chatSettings.activeBackend,
+                                fishParams: $chatSettings.fishParams,
+                                disabled: viewModel.status.isWorking
+                            )
 
-                    VoiceSelector(
-                        selectedVoiceID: $viewModel.selectedVoiceID,
-                        voices: voices,
-                        activeBackend: chatSettings.activeBackend,
-                        disabled: viewModel.status.isWorking
-                    )
+                            VoiceSelector(
+                                selectedVoiceID: $viewModel.selectedVoiceID,
+                                voices: voices,
+                                activeBackend: chatSettings.activeBackend,
+                                disabled: viewModel.status.isWorking
+                            )
 
+                            // Voice Changer entry-point. Sits in the sidebar
+                            // VStack next to the voice picker because it's an
+                            // audio-in / audio-out concern, not a text-editor
+                            // toolbar action. The matching File-menu shortcut
+                            // (⌥⌘V) lives in pocket_tts_macosApp.swift and
+                            // toggles the same AppState flag.
+                            Button(action: { showsVoiceChanger = true }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "waveform.and.mic")
+                                        .font(.system(size: 13))
+                                    Text("Change a Recording's Voice…")
+                                        .font(Theme.fontSM)
+                                }
+                                .foregroundStyle(Theme.textPrimary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                                .background(Theme.bgTertiary)
+                                .clipShape(RoundedRectangle(cornerRadius: Theme.radius))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(viewModel.status.isWorking)
+                            .help("Open the Voice Changer: transcribe an audio file and re-voice it with one of your voices (⌥⌘V)")
+                            .accessibilityIdentifier("single.voiceChangerButton")
+                        }
+                        .frame(width: Theme.sidebarWidth)
+                        .padding(.bottom, Theme.space2)
+                    }
+                    .frame(width: Theme.sidebarWidth)
+                    .scrollBounceBehavior(.basedOnSize)
+
+                    // Pinned footer — primary action + status + result player
+                    // stay visible regardless of scroll position.
                     SynthesizeButton(
                         status: viewModel.status,
                         canSynthesize: viewModel.status.canSynthesize && !viewModel.text.trimmingCharacters(in: .whitespaces).isEmpty,
@@ -50,30 +89,6 @@ struct SingleVoiceView: View {
                         onResume:     { viewModel.resume() }
                     )
 
-                    // Voice Changer entry-point. Sits in the sidebar
-                    // VStack next to the voice picker because it's an
-                    // audio-in / audio-out concern, not a text-editor
-                    // toolbar action. The matching File-menu shortcut
-                    // (⌥⌘V) lives in pocket_tts_macosApp.swift and
-                    // toggles the same AppState flag.
-                    Button(action: { showsVoiceChanger = true }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "waveform.and.mic")
-                                .font(.system(size: 13))
-                            Text("Change a Recording's Voice…")
-                                .font(Theme.fontSM)
-                        }
-                        .foregroundStyle(Theme.textPrimary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(Theme.bgTertiary)
-                        .clipShape(RoundedRectangle(cornerRadius: Theme.radius))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(viewModel.status.isWorking)
-                    .help("Open the Voice Changer: transcribe an audio file and re-voice it with one of your voices (⌥⌘V)")
-                    .accessibilityIdentifier("single.voiceChangerButton")
-
                     if chatSettings.activeBackend == .pocketTTS {
                         StatusIndicator(status: viewModel.status)
                     }
@@ -81,8 +96,6 @@ struct SingleVoiceView: View {
                     if let samples = viewModel.lastResultSamples {
                         AudioPlayer(samples: samples)
                     }
-
-                    Spacer(minLength: 0)
                 }
                 .frame(width: Theme.sidebarWidth)
 

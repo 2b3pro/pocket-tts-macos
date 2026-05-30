@@ -117,7 +117,11 @@ struct TextInput: View {
                     .padding(.vertical, Theme.space3 - 6)
                     .accessibilityIdentifier(accessibilityID)
             }
-            .frame(minHeight: Theme.textEditorMinHeight)
+            // Flex to fill the column rather than demanding a fixed tall
+            // height: the inner NSScrollView already scrolls, so the editor
+            // can shrink on short windows without clipping the surrounding
+            // chrome, and still expands to fill big displays.
+            .frame(minHeight: Theme.textEditorMinHeight, maxHeight: .infinity)
             .themeInputField()
 
             // Footer

@@ -88,8 +88,14 @@ nonisolated enum Theme {
     static let sidebarWidth: CGFloat = 380
     /// Top drag region — overlap with the system title bar.
     static let dragRegionHeight: CGFloat = 56
-    /// TextEditor min height for both single-voice and multi-talk script editors.
-    static let textEditorMinHeight: CGFloat = 900
+    /// Floor height for the single-voice / multi-talk script editors. The
+    /// editor flexes to fill its column (`maxHeight: .infinity`) so it grows
+    /// on large displays and shrinks on short windows; this value is only the
+    /// minimum that keeps it usable near `windowMinHeight`. A former hard
+    /// `minHeight: 900` forced the whole layout taller than short screens,
+    /// which clipped the header / tab bar off the top and the status off the
+    /// bottom — see `TextInput.swift`.
+    static let textEditorMinHeight: CGFloat = 200
 
     // MARK: Type scale (Tailwind classes → SwiftUI fonts)
     static let fontXS = Font.system(size: 12, weight: .regular)

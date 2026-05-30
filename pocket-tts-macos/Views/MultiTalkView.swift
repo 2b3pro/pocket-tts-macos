@@ -32,20 +32,60 @@ struct MultiTalkView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             HStack(alignment: .top, spacing: Theme.space6) {
-                // Left sidebar
+                // Left sidebar — config panels scroll, primary action is
+                // pinned. The Speakers / display / loudness panels (which grow
+                // with speaker count) scroll, while Synthesize + status +
+                // result player live in a fixed footer so they stay on screen
+                // on a short window; the secondary "Isolate Speakers" action
+                // scrolls with the config. The script editor on the right
+                // scrolls internally via its own NSScrollView.
                 VStack(spacing: Theme.space4) {
-                    BackendSelector(
-                        activeBackend: $chatSettings.activeBackend,
-                        fishParams: $chatSettings.fishParams,
-                        disabled: viewModel.status.isWorking
-                    )
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(spacing: Theme.space4) {
+                            BackendSelector(
+                                activeBackend: $chatSettings.activeBackend,
+                                fishParams: $chatSettings.fishParams,
+                                disabled: viewModel.status.isWorking
+                            )
 
-                    speakersPanel
+                            speakersPanel
 
-                    displayPanel
+                            displayPanel
 
-                    normalizationPanel
+                            normalizationPanel
 
+                            // Speaker Isolator entry-point. Sits in the sidebar
+                            // below the panels (same placement as Voice
+                            // Changer's button on Single Voice). The matching
+                            // File-menu shortcut (⌥⌘I) lives in
+                            // pocket_tts_macosApp.swift and toggles the same
+                            // AppState flag.
+                            Button(action: { showsSpeakerIsolator = true }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "person.2.wave.2")
+                                        .font(.system(size: 13))
+                                    Text("Isolate Speakers from Recording…")
+                                        .font(Theme.fontSM)
+                                }
+                                .foregroundStyle(Theme.textPrimary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                                .background(Theme.bgTertiary)
+                                .clipShape(RoundedRectangle(cornerRadius: Theme.radius))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(viewModel.status.isWorking)
+                            .help("Open the Speaker Isolator: diarize a multi-speaker recording, preview each isolated speaker, and optionally re-voice + re-encode back into video (⌥⌘I)")
+                            .accessibilityIdentifier("multi.speakerIsolatorButton")
+                        }
+                        .frame(width: Theme.sidebarWidth)
+                        .padding(.bottom, Theme.space2)
+                    }
+                    .frame(width: Theme.sidebarWidth)
+                    .scrollBounceBehavior(.basedOnSize)
+
+                    // Pinned footer — primary action + status + result player
+                    // stay visible regardless of scroll position.
                     SynthesizeButton(
                         status: viewModel.status,
                         canSynthesize: viewModel.status.canSynthesize && !viewModel.script.trimmingCharacters(in: .whitespaces).isEmpty,
@@ -56,30 +96,6 @@ struct MultiTalkView: View {
                         accessibilityIDPrefix: "multi"
                     )
 
-                    // Speaker Isolator entry-point. Sits in the sidebar
-                    // below SynthesizeButton (same placement as Voice
-                    // Changer's button on Single Voice). The matching
-                    // File-menu shortcut (⌥⌘I) lives in
-                    // pocket_tts_macosApp.swift and toggles the same
-                    // AppState flag.
-                    Button(action: { showsSpeakerIsolator = true }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "person.2.wave.2")
-                                .font(.system(size: 13))
-                            Text("Isolate Speakers from Recording…")
-                                .font(Theme.fontSM)
-                        }
-                        .foregroundStyle(Theme.textPrimary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background(Theme.bgTertiary)
-                        .clipShape(RoundedRectangle(cornerRadius: Theme.radius))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(viewModel.status.isWorking)
-                    .help("Open the Speaker Isolator: diarize a multi-speaker recording, preview each isolated speaker, and optionally re-voice + re-encode back into video (⌥⌘I)")
-                    .accessibilityIdentifier("multi.speakerIsolatorButton")
-
                     if chatSettings.activeBackend == .pocketTTS {
                         StatusIndicator(status: viewModel.status)
                     }
@@ -87,8 +103,6 @@ struct MultiTalkView: View {
                     if let samples = viewModel.lastResultSamples {
                         AudioPlayer(samples: samples, accessibilityIDPrefix: "multi")
                     }
-
-                    Spacer(minLength: 0)
                 }
                 .frame(width: Theme.sidebarWidth)
 
