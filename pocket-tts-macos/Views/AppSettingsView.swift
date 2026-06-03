@@ -150,7 +150,7 @@ struct AppSettingsView: View {
 
     private var pocketTTSTuningSection: some View {
         VStack(alignment: .leading, spacing: Theme.space3) {
-            Text("Pocket-TTS Tuning")
+            Text("Synthesis Tuning")
                 .font(Theme.fontSMBold)
                 .foregroundStyle(Theme.textPrimary)
             Text("Lower the chunk budget if you hear distortion on long sentences or packed multi-sentence chunks. Smaller chunks reduce AR-error accumulation per chunk at the cost of more chunk-boundary resets. 50 matches the Python reference (fp32); 30 is a safer starting point for our fp16 model.")

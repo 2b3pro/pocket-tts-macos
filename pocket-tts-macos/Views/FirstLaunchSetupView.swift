@@ -103,7 +103,7 @@ struct FirstLaunchSetupView: View {
 
     private var introBlurb: some View {
         VStack(alignment: .leading, spacing: Theme.space2) {
-            Text("Pocket-TTS runs entirely on your device. To do that we need to download the Core ML versions of the voice models from Hugging Face. After this one-time setup the app works fully offline.")
+            Text("Mimika runs entirely on your device. To do that we need to download the Core ML versions of the voice models from Hugging Face. After this one-time setup the app works fully offline.")
                 .font(Theme.fontSM)
                 .foregroundStyle(Theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -244,8 +244,8 @@ struct FirstLaunchSetupView: View {
         }
         .buttonStyle(.plain)
         .help(manager.isDownloading
-              ? "Cancel the download and quit Pocket-TTS"
-              : "Quit Pocket-TTS")
+              ? "Cancel the download and quit Mimika"
+              : "Quit Mimika")
     }
 
     @ViewBuilder

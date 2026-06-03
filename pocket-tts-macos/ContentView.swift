@@ -333,7 +333,7 @@ struct ContentView: View {
         HStack {
             Spacer()
             VStack(spacing: 2) {
-                Text("Pocket TTS")
+                Text("Mimika")
                     .font(Theme.font2XL)
                     .foregroundStyle(Theme.textPrimary)
                 Text("High-quality text-to-speech that runs on your CPU")

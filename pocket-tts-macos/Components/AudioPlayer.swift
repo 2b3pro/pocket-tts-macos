@@ -66,7 +66,7 @@ struct AudioPlayer: View {
             isPresented: Binding(get: { saveExporter != nil }, set: { if !$0 { saveExporter = nil } }),
             document: saveExporter,
             contentType: saveExporter?.contentType ?? .wav,
-            defaultFilename: saveExporter?.suggestedName ?? "pocket-tts-output"
+            defaultFilename: saveExporter?.suggestedName ?? "mimika-output"
         ) { _ in
             saveExporter = nil
         }
@@ -111,7 +111,7 @@ struct AudioPlayer: View {
     private func setup() {
         do {
             let tmpURL = URL(fileURLWithPath: NSTemporaryDirectory())
-                .appendingPathComponent("pocket-tts-preview-\(UUID().uuidString).wav")
+                .appendingPathComponent("mimika-preview-\(UUID().uuidString).wav")
             try WAVEncoder.write(samples: samples, to: tmpURL, sampleRate: 24_000)
             let player = try AVAudioPlayer(contentsOf: tmpURL)
             player.prepareToPlay()
@@ -176,12 +176,12 @@ struct AudioPlayer: View {
     private func exportWAV() {
         do {
             let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-                .appendingPathComponent("pocket-tts-export-\(UUID().uuidString).wav")
+                .appendingPathComponent("mimika-export-\(UUID().uuidString).wav")
             try WAVEncoder.write(samples: samples, to: tmp, sampleRate: 24_000)
             // Bare filename — SwiftUI's fileExporter appends the extension
             // matching `contentType`. Embedding ".wav" in the name causes
             // a double-extension display in the Save sheet.
-            saveExporter = SaveExporter(sourceURL: tmp, contentType: .wav, suggestedName: "pocket-tts-output")
+            saveExporter = SaveExporter(sourceURL: tmp, contentType: .wav, suggestedName: "mimika-output")
         } catch {
             FileHandle.standardError.write(Data("WAV export failed: \(error)\n".utf8))
         }
@@ -189,7 +189,7 @@ struct AudioPlayer: View {
 
     private func exportAAC() {
         let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("pocket-tts-export-\(UUID().uuidString).m4a")
+            .appendingPathComponent("mimika-export-\(UUID().uuidString).m4a")
         Task {
             do {
                 try await AACEncoder.write(samples: samples, to: tmp, sampleRate: 24_000)
@@ -198,7 +198,7 @@ struct AudioPlayer: View {
                     // anchored to the literal `"m4a"` extension. Apple's
                     // `.mpeg4Audio` resolves to `.mp4` here, which is the
                     // bug this works around.
-                    saveExporter = SaveExporter(sourceURL: tmp, contentType: .m4a, suggestedName: "pocket-tts-output")
+                    saveExporter = SaveExporter(sourceURL: tmp, contentType: .m4a, suggestedName: "mimika-output")
                 }
             } catch {
                 FileHandle.standardError.write(Data("AAC export failed: \(error)\n".utf8))
