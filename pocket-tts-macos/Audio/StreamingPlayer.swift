@@ -5,11 +5,14 @@
 
 // `@preconcurrency` downgrades Swift 6 Sendable warnings from AVFAudio
 // types to nothing: Apple hasn't marked `AVAudioEngine` / `AVAudioPlayerNode`
-// Sendable yet, but we capture them in the `DispatchQueue.global(...).async`
-// stop-hop below (the priority-inversion guard) where they're only touched
-// once before the closure returns. Matches the same opt-out used in
+// Sendable yet, but we capture them in the `controlQueue` hops below (the
+// priority-inversion guard — see `controlQueue`), where the engine is only
+// ever driven from that one serial queue. Matches the same opt-out used in
 // Engine/VoiceChangerPipeline.swift for AVURLAsset.
 @preconcurrency import AVFoundation
+#if os(macOS)
+import CoreAudio
+#endif
 import Foundation
 import Synchronization
 
@@ -49,8 +52,11 @@ actor StreamingPlayer {
     // MARK: - Stored state
     let currentAmplitude = AmplitudeRef(0)
 
-    private let engine = AVAudioEngine()
-    private let playerNode = AVAudioPlayerNode()
+    // `engine` and `playerNode` are `internal` (not `private`) so the
+    // output-route-following logic in StreamingPlayer+Routing.swift can
+    // rebind/restart them. Nothing outside this actor touches them.
+    let engine = AVAudioEngine()
+    let playerNode = AVAudioPlayerNode()
     private let format: AVAudioFormat
 
     // Drain coordination: the last scheduled buffer's completion callback fires
@@ -59,7 +65,56 @@ actor StreamingPlayer {
     // `play()` sets up its continuation.
     private var drainContinuation: CheckedContinuation<Void, Error>?
     private var drainCompletedEarly = false
-    private var isStopped = false
+    private(set) var isStopped = false
+
+    /// All blocking AVAudioEngine lifecycle calls (start / stop / pause /
+    /// setDeviceID) run on this serial queue at a fixed `.default` QoS —
+    /// matching AVFoundation's own internal timer queue — so they never
+    /// execute on, or block, a higher-QoS thread. Ordered operations are
+    /// awaited via continuation, which SUSPENDS the actor rather than blocking
+    /// it; that suspension is what actually defeats the priority inversion the
+    /// Thread Performance Checker flags around `AVAudioPlayerNode.stop()`.
+    private let controlQueue = DispatchQueue(
+        label: "com.slaughtersj.pocket-tts-macos.streamingplayer.control",
+        qos: .default
+    )
+
+    // MARK: - Output-route following
+    // macOS AVAudioEngine binds its output to whatever device is the system
+    // default when the output node is first realized, and does NOT migrate
+    // when the default changes afterward (AirPods connecting, the user
+    // switching outputs, a display's speakers waking, etc.). We explicitly
+    // bind the engine's output to the current default and re-bind on every
+    // default-device / configuration change so Mimika follows the system
+    // output like every other app. Logic lives in StreamingPlayer+Routing.swift.
+
+    /// Serial queue the CoreAudio default-output-device listener fires on.
+    let routeQueue = DispatchQueue(label: "com.slaughtersj.pocket-tts-macos.streamingplayer.route")
+
+    /// Owns the route-change observers; its own plain-class `deinit` removes
+    /// them when this player is released. (An actor's nonisolated `deinit`
+    /// can't touch non-Sendable isolated state, so teardown lives in the
+    /// token — see RouteObserverToken in StreamingPlayer+Routing.swift.)
+    var routeObserverToken: RouteObserverToken?
+
+    /// True while `play()` is actively consuming a stream + draining. Route
+    /// changes that land mid-utterance are deferred (`pendingReroute`) until
+    /// the short utterance finishes, so we never stop the engine underneath
+    /// an in-flight drain continuation.
+    var isStreaming = false
+    var pendingReroute = false
+
+    /// One-time guard so the route observers are installed on first playback
+    /// rather than in `init` — an actor's synchronous initializer can't call
+    /// isolated methods. Binding to the current default still happens on every
+    /// `play()` / `resume()` via `applyCurrentDefaultOutputDevice()`.
+    var routingConfigured = false
+
+    #if os(macOS)
+    /// Output device the engine is currently bound to — lets us skip a
+    /// needless stop/rebind when the default hasn't actually changed.
+    var boundDeviceID: AudioDeviceID = 0
+    #endif
 
     // MARK: - Init
     init() throws {
@@ -89,15 +144,17 @@ actor StreamingPlayer {
         isStopped = false
         drainContinuation = nil
         drainCompletedEarly = false
+        isStreaming = true
+        pendingReroute = false
+        defer { isStreaming = false }
 
-        if !engine.isRunning {
-            do {
-                try engine.start()
-            } catch {
-                throw PlayerError.engineStartFailed(error)
-            }
-        }
-        playerNode.play()
+        // Install route observers once, then make sure this utterance plays on
+        // whatever output is the current system default (cheap no-op when it
+        // hasn't changed since last time).
+        configureOutputRouting()
+        await applyCurrentDefaultOutputDevice()
+
+        try await startEngineAndPlayer()
 
         var sawFinalFlag = false
 
@@ -142,6 +199,14 @@ actor StreamingPlayer {
             }
         }
         currentAmplitude.atomic.store(0, ordering: .relaxed)
+
+        // A route change that arrived mid-utterance was deferred; apply it now
+        // that the drain is complete, so the next utterance lands on the right
+        // device.
+        if pendingReroute {
+            pendingReroute = false
+            await applyCurrentDefaultOutputDevice(restartIfNeeded: true)
+        }
     }
 
     /// Hard stop: halts player + engine and unblocks any in-flight `play()`.
@@ -150,34 +215,14 @@ actor StreamingPlayer {
         isStopped = true
         currentAmplitude.atomic.store(0, ordering: .relaxed)
 
-        // Priority-inversion guard. `playerNode.stop()` / `engine.stop()`
-        // synchronously wait on AVAudioEngine's internal threads
-        // (AVAEDispatchQueueTimer::CancelTimer in particular), which
-        // AVFoundation runs at `.default` QoS.
-        //
-        // History: we first dispatched at `.default` here and Xcode's
-        // "Hang Risk" diagnostic flagged the OUTER mismatch (actor
-        // entered from a `.userInitiated` SwiftUI stop tap → dispatched
-        // to `.default`). The fix at the time bumped to `.userInitiated`
-        // to match the caller side. That cleared the outer warning but
-        // created the INNER one: our now-`.userInitiated` dispatched
-        // thread blocks on AVAudioEngine's `.default` internal queue,
-        // tripping the same diagnostic one layer deeper.
-        //
-        // Real fix: match AVFoundation's internal QoS exactly. With both
-        // ends at `.default`, libdispatch sees no inversion regardless
-        // of caller QoS — the dispatched closure is fire-and-forget so
-        // the caller's higher-QoS thread isn't held WAITING on us.
-        // Functionally identical user-facing behavior; the brief queue-
-        // scheduling delay (~µs) is dominated by AVAudioEngine.stop()
-        // itself (~tens of ms). The drain-side continuation is signaled
-        // below either way, so observable timing is unchanged.
-        let pn = playerNode
-        let eng = engine
-        DispatchQueue.global(qos: .default).async {
-            if pn.isPlaying { pn.stop() }
-            if eng.isRunning { eng.stop() }
-        }
+        // Tear down on the control queue (fire-and-forget). `.enforceQoS`
+        // pins the work at the queue's `.default` QoS — matching AVFoundation's
+        // internal timer queue — so the caller's (often `.userInitiated`) QoS
+        // can't propagate in and leave a high-QoS thread blocked inside
+        // `AVAEDispatchQueueTimer::CancelTimer`. That propagation is exactly
+        // what the earlier `DispatchQueue.global(qos: .default).async` form
+        // missed, and what the Thread Performance Checker kept flagging.
+        stopEngineAndPlayer()
 
         // Surface stop to any awaiter.
         if let cont = drainContinuation {
@@ -188,20 +233,97 @@ actor StreamingPlayer {
 
     /// Suspends playback. Scheduled buffers are retained; `resume()` restarts.
     /// Matches the Electron streaming-wav-player.ts pause semantics.
-    func pause() {
-        engine.pause()
-    }
-
-    func resume() throws {
-        if !engine.isRunning {
-            do {
-                try engine.start()
-            } catch {
-                throw PlayerError.engineStartFailed(error)
+    func pause() async {
+        let eng = engine
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            controlQueue.async(qos: .default, flags: .enforceQoS) {
+                eng.pause()
+                cont.resume()
             }
         }
-        if !playerNode.isPlaying { playerNode.play() }
     }
+
+    func resume() async throws {
+        // Install route observers once, re-bind to the current default output
+        // in case it changed while paused, then restart on the control queue.
+        configureOutputRouting()
+        await applyCurrentDefaultOutputDevice()
+        try await startEngineAndPlayer()
+    }
+
+    // MARK: - Engine lifecycle (control queue)
+
+    /// Start the engine + player node on the control queue, awaited. Throws
+    /// `PlayerError.engineStartFailed` if the engine won't start.
+    private func startEngineAndPlayer() async throws {
+        let eng = engine
+        let pn = playerNode
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            controlQueue.async(qos: .default, flags: .enforceQoS) {
+                do {
+                    if !eng.isRunning { try eng.start() }
+                    if !pn.isPlaying { pn.play() }
+                    cont.resume()
+                } catch {
+                    cont.resume(throwing: PlayerError.engineStartFailed(error))
+                }
+            }
+        }
+    }
+
+    /// Stop the player node + engine on the control queue. Fire-and-forget:
+    /// `stop()` doesn't need to await teardown, and not awaiting keeps the
+    /// caller's thread free.
+    private func stopEngineAndPlayer() {
+        let pn = playerNode
+        let eng = engine
+        controlQueue.async(qos: .default, flags: .enforceQoS) {
+            if pn.isPlaying { pn.stop() }
+            if eng.isRunning { eng.stop() }
+        }
+    }
+
+    #if os(macOS)
+    /// Re-bind the engine's output to `deviceID` on the control queue
+    /// (awaited). AVAudioEngine only allows the output device to change while
+    /// stopped, so the engine is stopped, re-pointed, and — when `restart` is
+    /// set — restarted, all on the one serial queue. Returns the device it
+    /// bound to, or nil if `setDeviceID` failed. Called by the route-following
+    /// code in StreamingPlayer+Routing.swift.
+    func rebindOutputDevice(
+        to deviceID: AudioDeviceID,
+        wasRunning: Bool,
+        restart: Bool
+    ) async -> AudioDeviceID? {
+        let eng = engine
+        let pn = playerNode
+        return await withCheckedContinuation { (cont: CheckedContinuation<AudioDeviceID?, Never>) in
+            controlQueue.async(qos: .default, flags: .enforceQoS) {
+                if wasRunning { eng.stop() }
+                var bound: AudioDeviceID?
+                do {
+                    try eng.outputNode.auAudioUnit.setDeviceID(deviceID)
+                    bound = deviceID
+                } catch {
+                    #if DEBUG
+                    print("[StreamingPlayer] setDeviceID(\(deviceID)) failed: \(error)")
+                    #endif
+                }
+                if restart {
+                    do {
+                        try eng.start()
+                        if !pn.isPlaying { pn.play() }
+                    } catch {
+                        #if DEBUG
+                        print("[StreamingPlayer] restart after reroute failed: \(error)")
+                        #endif
+                    }
+                }
+                cont.resume(returning: bound)
+            }
+        }
+    }
+    #endif
 
     // MARK: - Private helpers
 
