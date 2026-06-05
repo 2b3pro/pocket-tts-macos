@@ -260,18 +260,21 @@ extension SpeakerIsolatorViewModel {
             } catch is CancellationError {
                 self.setStatus(.idle)
             } catch {
-                // Belt-and-suspenders: a throw between step 7 (stereo
-                // load) and step 10 (rebuild from vocals stem) would
-                // otherwise leave `self.speakers` populated with the
-                // step-6 mix-derived rows, which contain music
-                // underneath every speaker. The user would see rows
-                // that look correct but export contaminated content.
-                // Clearing the array forces the failure to be visible
-                // — the user re-runs explicitly instead of silently
-                // exporting from the partial pipeline state.
-                self.speakers = []
-                self.vocalsBed = nil
-                self.musicBed = nil
+                // Preserve the diarize-first speakers on a mid-pipeline
+                // failure (e.g. the OPTIONAL source-separation step
+                // throwing) instead of wiping them. Losing all the
+                // diarization + isolation work because the optional
+                // separation phase failed is harsh UX — the user keeps the
+                // v1-quality speaker rows (graceful degradation, matching
+                // the Phase 7 soft-fallback spirit). Status is `.error` to
+                // surface the failure.
+                //
+                // The previous behavior set `speakers = []` + nil beds here
+                // specifically so the user couldn't export mix-derived
+                // (music-under-vocals) rows from a half-finished separation.
+                // With preserve, that concern is handled by gating the
+                // footer's Export / Change Voices actions on `.error`
+                // (SpeakerIsolatorSheet) rather than by discarding the rows.
                 self.setStatus(.error(String(describing: error)))
             }
         }

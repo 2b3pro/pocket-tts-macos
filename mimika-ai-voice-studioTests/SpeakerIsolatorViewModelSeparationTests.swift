@@ -273,6 +273,11 @@ final class SpeakerIsolatorViewModelSeparationTests: XCTestCase {
         // because the music stem never landed).
         XCTAssertEqual(vm.speakers.count, 2,
                        "pre-separation speakers must survive the failure")
+        // Guard before subscripting so a count mismatch fails cleanly via
+        // the assert above instead of trapping the whole run with
+        // "Index out of range" (which masks the real failure + restarts
+        // the test bundle).
+        guard vm.speakers.count == 2 else { return }
         XCTAssertEqual(vm.speakers[0].id, "SPEAKER_00")
         XCTAssertEqual(vm.speakers[1].id, "SPEAKER_01")
     }

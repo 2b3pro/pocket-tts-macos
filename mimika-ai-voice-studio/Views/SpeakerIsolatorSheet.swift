@@ -378,6 +378,14 @@ struct SpeakerIsolatorSheet: View {
                     .padding(.vertical, Theme.space2)
                     .background(Theme.bgTertiary)
                     .clipShape(RoundedRectangle(cornerRadius: Theme.radius))
+                    // Only exportable from a COMPLETED pass. A mid-pipeline
+                    // failure now preserves the (mix-derived) speaker rows
+                    // for context, but those shouldn't be exported —
+                    // gate on `.done` so `.error` can't export them.
+                    .disabled(!viewModel.status.isDone)
+                    .help(viewModel.status.isDone
+                          ? "Save each speaker's isolated track"
+                          : "Re-run isolation before exporting — the last pass didn't complete")
 
                 Button("Change Voices…") { runChangeVoices() }
                     .buttonStyle(.plain)
@@ -387,8 +395,10 @@ struct SpeakerIsolatorSheet: View {
                     .padding(.vertical, Theme.space2)
                     .background(viewModel.hasAnyActionableChange ? Theme.accent : Theme.bgTertiary)
                     .clipShape(RoundedRectangle(cornerRadius: Theme.radius))
-                    .disabled(!viewModel.hasAnyActionableChange)
-                    .help(viewModel.hasAnyActionableChange
+                    .disabled(!viewModel.hasAnyActionableChange || !viewModel.status.isDone)
+                    .help(!viewModel.status.isDone
+                          ? "Re-run isolation first — the last pass didn't complete"
+                          : viewModel.hasAnyActionableChange
                           ? "Re-voice / passthrough / discard each row per its picker selection, then combine into one track"
                           : "Change at least one row's dropdown (pick a voice OR Discard) to enable")
             }
