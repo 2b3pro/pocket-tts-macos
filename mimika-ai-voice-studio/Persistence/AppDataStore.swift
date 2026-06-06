@@ -94,6 +94,7 @@ enum AppDataStore {
         case .singleVoice: return "Scriptwriter (Single Voice)"
         case .multiTalk:   return "Scriptwriter (Multi-Talk)"
         case .chat:        return "Chat"
+        case .ensemble:    return "Persona Writer (Ensemble)"
         }
     }
 

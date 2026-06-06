@@ -37,6 +37,16 @@ actor LocalLLMClient {
         }
     }
 
+    /// Structured-output mode for `completeChat`. `.jsonObject` asks the
+    /// server for OpenAI's `{"type":"json_object"}` response_format; servers
+    /// that don't support it simply ignore the field, which is why callers
+    /// (the persona-writer) ALSO run the output through a tolerant JSON
+    /// extractor and retry once with `.text` on failure.
+    enum ResponseFormat: Sendable {
+        case text
+        case jsonObject
+    }
+
     private let baseURL: URL
     private let session: URLSession
 
@@ -77,7 +87,8 @@ actor LocalLLMClient {
     nonisolated func streamChat(
         messages: [ChatMessage],
         model: String,
-        systemPrompt: String = ""
+        systemPrompt: String = "",
+        temperature: Double? = nil
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream<String, Error> { continuation in
             let task = Task {
@@ -86,6 +97,7 @@ actor LocalLLMClient {
                         messages: messages,
                         model: model,
                         systemPrompt: systemPrompt,
+                        temperature: temperature,
                         continuation: continuation
                     )
                     continuation.finish()
@@ -103,6 +115,7 @@ actor LocalLLMClient {
         messages: [ChatMessage],
         model: String,
         systemPrompt: String,
+        temperature: Double?,
         continuation: AsyncThrowingStream<String, Error>.Continuation
     ) async throws {
         let url = baseURL.appendingPathComponent("v1/chat/completions")
@@ -119,7 +132,7 @@ actor LocalLLMClient {
             APIMessage(role: $0.role.rawValue, content: $0.content)
         })
 
-        let body = ChatRequest(model: model, messages: apiMessages, stream: true)
+        let body = ChatRequest(model: model, messages: apiMessages, stream: true, temperature: temperature)
         req.httpBody = try JSONEncoder().encode(body)
 
         let (bytes, response) = try await session.bytes(for: req)
@@ -156,14 +169,79 @@ actor LocalLLMClient {
             }
         }
     }
+
+    // MARK: - Chat completion (non-streaming)
+
+    /// POST /v1/chat/completions with `stream: false`. Returns the whole
+    /// `choices[0].message.content` in one shot. Used by the persona-writer:
+    /// JSON output is atomic (there's nothing to do with a partial JSON token
+    /// feed) and the streaming path silently swallows per-line decode errors,
+    /// which would mask malformed JSON. `responseFormat: .jsonObject` sends
+    /// OpenAI's structured-output hint when the server supports it; callers
+    /// still defend with a tolerant extractor + a `.text` retry.
+    func completeChat(
+        messages: [ChatMessage],
+        model: String,
+        systemPrompt: String = "",
+        temperature: Double? = nil,
+        responseFormat: ResponseFormat = .text
+    ) async throws -> String {
+        let url = baseURL.appendingPathComponent("v1/chat/completions")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        var apiMessages: [APIMessage] = []
+        if !systemPrompt.isEmpty {
+            apiMessages.append(APIMessage(role: "system", content: systemPrompt))
+        }
+        apiMessages.append(contentsOf: messages.map {
+            APIMessage(role: $0.role.rawValue, content: $0.content)
+        })
+
+        let rf: ResponseFormatDTO? = (responseFormat == .jsonObject)
+            ? ResponseFormatDTO(type: "json_object")
+            : nil
+        let body = ChatRequest(
+            model: model,
+            messages: apiMessages,
+            stream: false,
+            temperature: temperature,
+            response_format: rf
+        )
+        req.httpBody = try JSONEncoder().encode(body)
+
+        let (data, response) = try await session.data(for: req)
+        guard let http = response as? HTTPURLResponse else {
+            throw ClientError.httpError(status: -1, body: nil)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw ClientError.httpError(status: http.statusCode, body: String(data: data, encoding: .utf8))
+        }
+        do {
+            let decoded = try JSONDecoder().decode(ChatCompletionResponse.self, from: data)
+            return decoded.choices.first?.message.content ?? ""
+        } catch {
+            throw ClientError.decodeFailed("\(error)")
+        }
+    }
 }
 
 // MARK: - API DTOs (nonisolated for use from the actor's executor)
 
+// `temperature` / `response_format` are Optional so Swift's synthesized
+// Codable omits them from the JSON when nil (encodeIfPresent) — keeping the
+// streaming request byte-identical to the pre-Ensemble shape.
 private nonisolated struct ChatRequest: Codable {
     let model: String
     let messages: [APIMessage]
     let stream: Bool
+    var temperature: Double? = nil
+    var response_format: ResponseFormatDTO? = nil
+}
+
+private nonisolated struct ResponseFormatDTO: Codable {
+    let type: String
 }
 
 private nonisolated struct APIMessage: Codable {
@@ -185,5 +263,18 @@ private nonisolated struct ModelsResponse: Codable {
     let data: [Entry]
     struct Entry: Codable {
         let id: String
+    }
+}
+
+// Non-streaming completion response: `choices[0].message.content`. Content is
+// Optional so a server that returns a null/absent content (e.g. a tool-call
+// turn) decodes to "" rather than throwing.
+private nonisolated struct ChatCompletionResponse: Codable {
+    let choices: [Choice]
+    struct Choice: Codable {
+        let message: Message
+        struct Message: Codable {
+            let content: String?
+        }
     }
 }
