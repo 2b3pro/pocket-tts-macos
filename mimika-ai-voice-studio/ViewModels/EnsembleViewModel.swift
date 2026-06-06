@@ -42,6 +42,8 @@ final class EnsembleViewModel {
     /// Hard per-turn length ceiling (OpenAI `max_tokens`). Keeps replies short
     /// on top of the "one or two sentences" instruction + stop sequences.
     var maxResponseTokens: Int = 250
+    /// Repetition penalty applied to every speaker turn (llama.cpp / LM Studio).
+    var repeatPenalty: Double = 1.2
 
     // MARK: - Composer
     var draft: String = ""
@@ -159,13 +161,15 @@ final class EnsembleViewModel {
             name: "Ada",
             voiceID: "cosette",
             systemPrompt: "You are Ada, a sharp, dry systems engineer in a group conversation. Speak ONLY in spoken dialogue — no stage directions, no asterisks, no brackets. Keep replies to one or two sentences. You find most ideas naive but respect rigor. If someone calls you an AI, brush it off and carry on.",
-            temperature: 0.7
+            temperature: 0.7,
+            samplingPreset: .relaxed
         ),
         Persona(
             name: "Bertrand",
             voiceID: "jean",
             systemPrompt: "You are Bertrand, a grandiose, over-confident futurist in a group conversation. Speak ONLY in spoken dialogue — no stage directions, no asterisks, no brackets. Keep replies to one or two sentences. You think every idea is world-changing. If someone calls you an AI, scoff and continue.",
-            temperature: 0.9
+            temperature: 0.9,
+            samplingPreset: .spirited
         ),
     ]
 
@@ -189,7 +193,8 @@ final class EnsembleViewModel {
                 name: entry.full.name,
                 voiceID: entry.voiceID,
                 systemPrompt: entry.full.personaPrompt,
-                temperature: entry.full.temperature
+                temperature: entry.full.temperature,
+                samplingPreset: entry.preset
             )
         }
         persistCast(scene: scene, mood: mood, confirmed: confirmed)
@@ -207,6 +212,7 @@ final class EnsembleViewModel {
                 suggestedVoice: entry.full.voice,
                 personaPrompt: entry.full.personaPrompt,
                 temperature: entry.full.temperature,
+                samplingPreset: entry.preset,
                 readsOnOthers: entry.full.readsOnOthers,
                 sortOrder: i
             )
@@ -320,17 +326,21 @@ final class EnsembleViewModel {
         // Build the request BEFORE appending this turn's placeholder so the
         // persona sees only the context that PRECEDES its own line — not an
         // empty in-flight assistant turn plus a spurious "(continue)".
+        let preset = persona.samplingPreset
         let request = SpokenTurnRunner.Request(
             messages: messagesForPersona(persona),
             model: resolvedModel,
             systemPrompt: framedSystemPrompt(persona),
-            temperature: persona.temperature,
+            temperature: preset.temperature,
             voiceID: persona.voiceID,
             options: currentSynthesisOptions(),
             speak: false,            // Phase 1: text only
             collectSamples: false,
             stop: stopSequences(for: persona),
-            maxTokens: maxResponseTokens
+            maxTokens: maxResponseTokens,
+            topP: preset.topP,
+            topK: preset.topK,
+            repeatPenalty: repeatPenalty
         )
 
         let turnID = UUID()

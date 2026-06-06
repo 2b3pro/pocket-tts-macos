@@ -26,8 +26,12 @@ nonisolated struct Persona: Identifiable, Equatable, Sendable {
     var name: String
     var voiceID: String
     var systemPrompt: String
+    /// The persona-writer's assigned temperature (used to default the preset).
     var temperature: Double
     var weight: Double
+    /// User-facing sampling preset (Strict / Relaxed / Spirited / Butterfly
+    /// Chaser) — governs the LLM temperature/top-p/top-k for this speaker.
+    var samplingPreset: SamplingPreset
 
     init(
         id: UUID = UUID(),
@@ -35,7 +39,8 @@ nonisolated struct Persona: Identifiable, Equatable, Sendable {
         voiceID: String,
         systemPrompt: String,
         temperature: Double = 0.7,
-        weight: Double = 1.0
+        weight: Double = 1.0,
+        samplingPreset: SamplingPreset = .relaxed
     ) {
         self.id = id
         self.name = name
@@ -43,6 +48,63 @@ nonisolated struct Persona: Identifiable, Equatable, Sendable {
         self.systemPrompt = systemPrompt
         self.temperature = temperature
         self.weight = weight
+        self.samplingPreset = samplingPreset
+    }
+}
+
+// MARK: - SamplingPreset
+// Friendly per-speaker "how on-the-rails" dial that maps to real sampling
+// params. Stored on EnsemblePersona as its rawValue; surfaced as a segmented
+// picker in setup.
+
+nonisolated enum SamplingPreset: String, CaseIterable, Sendable {
+    case strict
+    case relaxed
+    case spirited
+    case butterflyChaser
+
+    var displayName: String {
+        switch self {
+        case .strict:          return "Strict"
+        case .relaxed:         return "Relaxed"
+        case .spirited:        return "Spirited"
+        case .butterflyChaser: return "Butterfly Chaser"
+        }
+    }
+
+    var temperature: Double {
+        switch self {
+        case .strict:          return 0.3
+        case .relaxed:         return 0.7
+        case .spirited:        return 0.9
+        case .butterflyChaser: return 1.1
+        }
+    }
+
+    var topP: Double {
+        switch self {
+        case .strict:          return 0.85
+        case .relaxed:         return 0.95
+        case .spirited:        return 0.97
+        case .butterflyChaser: return 0.98
+        }
+    }
+
+    var topK: Int {
+        switch self {
+        case .strict:          return 20
+        case .relaxed:         return 40
+        case .spirited:        return 60
+        case .butterflyChaser: return 100
+        }
+    }
+
+    /// Pick the preset whose temperature is closest to a writer-assigned value,
+    /// so each persona starts on a sensible default.
+    static func nearest(temperature: Double) -> SamplingPreset {
+        allCases.min {
+            abs($0.temperature - temperature) < abs($1.temperature - temperature)
+        } ?? .relaxed
     }
 }
 

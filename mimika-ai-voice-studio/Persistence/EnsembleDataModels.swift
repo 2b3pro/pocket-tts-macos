@@ -128,6 +128,9 @@ final class EnsemblePersona {
     var suggestedVoice: String
     var personaPrompt: String
     var temperature: Double
+    /// SamplingPreset.rawValue — the user's per-speaker sampling dial. Additive
+    /// with a default so existing rows migrate cleanly.
+    var samplingPresetRaw: String = SamplingPreset.relaxed.rawValue
     /// `[String: String]` (otherName → one-line read) serialized as JSON.
     /// SwiftData has no native dictionary attribute and this is never queried
     /// by key, so a flat JSON string is the pragmatic store (see `readsOnOthers`).
@@ -143,6 +146,7 @@ final class EnsemblePersona {
         suggestedVoice: String = "",
         personaPrompt: String = "",
         temperature: Double = 0.7,
+        samplingPreset: SamplingPreset = .relaxed,
         readsOnOthers: [String: String] = [:],
         sortOrder: Int
     ) {
@@ -153,8 +157,14 @@ final class EnsemblePersona {
         self.suggestedVoice = suggestedVoice
         self.personaPrompt = personaPrompt
         self.temperature = temperature
+        self.samplingPresetRaw = samplingPreset.rawValue
         self.readsOnOthersJSON = Self.encodeReads(readsOnOthers)
         self.sortOrder = sortOrder
+    }
+
+    var samplingPreset: SamplingPreset {
+        get { SamplingPreset(rawValue: samplingPresetRaw) ?? .relaxed }
+        set { samplingPresetRaw = newValue.rawValue }
     }
 
     /// Typed accessor over `readsOnOthersJSON`. Decodes lazily; tolerant of a

@@ -90,7 +90,10 @@ actor LocalLLMClient {
         systemPrompt: String = "",
         temperature: Double? = nil,
         stop: [String]? = nil,
-        maxTokens: Int? = nil
+        maxTokens: Int? = nil,
+        topP: Double? = nil,
+        topK: Int? = nil,
+        repeatPenalty: Double? = nil
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream<String, Error> { continuation in
             let task = Task {
@@ -102,6 +105,9 @@ actor LocalLLMClient {
                         temperature: temperature,
                         stop: stop,
                         maxTokens: maxTokens,
+                        topP: topP,
+                        topK: topK,
+                        repeatPenalty: repeatPenalty,
                         continuation: continuation
                     )
                     continuation.finish()
@@ -122,6 +128,9 @@ actor LocalLLMClient {
         temperature: Double?,
         stop: [String]?,
         maxTokens: Int?,
+        topP: Double?,
+        topK: Int?,
+        repeatPenalty: Double?,
         continuation: AsyncThrowingStream<String, Error>.Continuation
     ) async throws {
         let url = baseURL.appendingPathComponent("v1/chat/completions")
@@ -138,7 +147,7 @@ actor LocalLLMClient {
             APIMessage(role: $0.role.rawValue, content: $0.content)
         })
 
-        let body = ChatRequest(model: model, messages: apiMessages, stream: true, temperature: temperature, stop: stop, max_tokens: maxTokens)
+        let body = ChatRequest(model: model, messages: apiMessages, stream: true, temperature: temperature, stop: stop, max_tokens: maxTokens, top_p: topP, top_k: topK, repeat_penalty: repeatPenalty)
         req.httpBody = try JSONEncoder().encode(body)
 
         let (bytes, response) = try await session.bytes(for: req)
@@ -246,6 +255,11 @@ private nonisolated struct ChatRequest: Codable {
     var response_format: ResponseFormatDTO? = nil
     var stop: [String]? = nil
     var max_tokens: Int? = nil
+    // top_k + repeat_penalty are llama.cpp / LM Studio extensions (not OpenAI
+    // standard); omitted when nil so strict endpoints are unaffected.
+    var top_p: Double? = nil
+    var top_k: Int? = nil
+    var repeat_penalty: Double? = nil
 }
 
 private nonisolated struct ResponseFormatDTO: Codable {

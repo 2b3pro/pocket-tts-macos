@@ -27,6 +27,7 @@ struct EnsembleSetupView: View {
     // Keyed by persona INDEX, not name — the local model may emit duplicate or
     // blank names and we must not let those collide in setup state.
     @State private var voiceSelections: [Int: String] = [:]
+    @State private var presetSelections: [Int: SamplingPreset] = [:]
     @State private var writer: PersonaWriter
 
     init(viewModel: EnsembleViewModel, voices: [BundledVoice], appState: AppState, onDone: @escaping () -> Void) {
@@ -172,18 +173,29 @@ struct EnsembleSetupView: View {
             ScrollView {
                 VStack(spacing: Theme.space2) {
                     ForEach(Array(writer.personas.enumerated()), id: \.offset) { index, persona in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(persona.name.isEmpty ? "Character \(index + 1)" : persona.name)
-                                    .font(Theme.fontSMBold).foregroundStyle(Theme.textPrimary)
-                                Text(persona.voice).font(Theme.fontXS).foregroundStyle(Theme.textSecondary)
+                        VStack(alignment: .leading, spacing: Theme.space2) {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(persona.name.isEmpty ? "Character \(index + 1)" : persona.name)
+                                        .font(Theme.fontSMBold).foregroundStyle(Theme.textPrimary)
+                                    Text(persona.voice).font(Theme.fontXS).foregroundStyle(Theme.textSecondary)
+                                }
+                                Spacer()
+                                Picker("", selection: voiceBinding(for: persona, index: index)) {
+                                    ForEach(voiceOptions) { option in Text(option.name).tag(option.id) }
+                                }
+                                .labelsHidden()
+                                .frame(width: 180)
                             }
-                            Spacer()
-                            Picker("", selection: voiceBinding(for: persona, index: index)) {
-                                ForEach(voiceOptions) { option in Text(option.name).tag(option.id) }
+                            Picker("", selection: presetBinding(for: persona, index: index)) {
+                                ForEach(SamplingPreset.allCases, id: \.self) { preset in
+                                    Text(preset.displayName).tag(preset)
+                                }
                             }
+                            .pickerStyle(.segmented)
                             .labelsHidden()
-                            .frame(width: 200)
+                            Text(presetCaption(resolvedPreset(for: persona, index: index)))
+                                .font(Theme.fontXS).foregroundStyle(Theme.textSecondary)
                         }
                         .padding(Theme.space2)
                         .background(Theme.bgSecondary)
@@ -285,10 +297,31 @@ struct EnsembleSetupView: View {
         )
     }
 
+    /// Sampling preset for a persona: the user's pick, else the preset nearest
+    /// the writer's assigned temperature.
+    private func resolvedPreset(for persona: PersonaFull, index: Int) -> SamplingPreset {
+        presetSelections[index] ?? SamplingPreset.nearest(temperature: persona.temperature)
+    }
+
+    private func presetBinding(for persona: PersonaFull, index: Int) -> Binding<SamplingPreset> {
+        Binding(
+            get: { resolvedPreset(for: persona, index: index) },
+            set: { presetSelections[index] = $0 }
+        )
+    }
+
+    private func presetCaption(_ preset: SamplingPreset) -> String {
+        "temp \(preset.temperature) · top-p \(preset.topP) · top-k \(preset.topK)"
+    }
+
     private func startEnsemble() {
         guard !voiceOptions.isEmpty else { return }
         let confirmed = writer.personas.enumerated().map { index, persona in
-            ConfirmedPersona(full: persona, voiceID: resolvedVoiceID(for: persona, index: index))
+            ConfirmedPersona(
+                full: persona,
+                voiceID: resolvedVoiceID(for: persona, index: index),
+                preset: resolvedPreset(for: persona, index: index)
+            )
         }
         viewModel.applyGeneratedCast(scene: scene, mood: mood, userName: userName, confirmed: confirmed)
         onDone()

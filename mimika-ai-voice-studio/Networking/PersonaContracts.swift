@@ -92,6 +92,7 @@ nonisolated struct PersonaFull: Codable, Sendable {
 nonisolated struct ConfirmedPersona: Sendable {
     var full: PersonaFull
     var voiceID: String
+    var preset: SamplingPreset
 }
 
 // MARK: - Voice option (unified stock + imported voice for pickers/resolution)

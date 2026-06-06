@@ -41,6 +41,10 @@ final class SpokenTurnRunner {
         var stop: [String]? = nil
         /// Hard ceiling on a turn's length (OpenAI `max_tokens`).
         var maxTokens: Int? = nil
+        /// Per-speaker sampling (from the SamplingPreset) + repetition penalty.
+        var topP: Double? = nil
+        var topK: Int? = nil
+        var repeatPenalty: Double? = nil
     }
 
     struct Result: Sendable {
@@ -103,7 +107,10 @@ final class SpokenTurnRunner {
                 systemPrompt: request.systemPrompt,
                 temperature: request.temperature,
                 stop: request.stop,
-                maxTokens: request.maxTokens
+                maxTokens: request.maxTokens,
+                topP: request.topP,
+                topK: request.topK,
+                repeatPenalty: request.repeatPenalty
             )
             do {
                 for try await delta in stream {

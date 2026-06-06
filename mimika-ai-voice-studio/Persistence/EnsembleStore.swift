@@ -45,6 +45,7 @@ enum EnsembleStore {
         suggestedVoice: String = "",
         personaPrompt: String = "",
         temperature: Double = 0.7,
+        samplingPreset: SamplingPreset = .relaxed,
         readsOnOthers: [String: String] = [:],
         sortOrder: Int
     ) -> EnsemblePersona {
@@ -55,6 +56,7 @@ enum EnsembleStore {
             suggestedVoice: suggestedVoice,
             personaPrompt: personaPrompt,
             temperature: temperature,
+            samplingPreset: samplingPreset,
             readsOnOthers: readsOnOthers,
             sortOrder: sortOrder
         )

@@ -147,4 +147,25 @@ final class EnsembleLoopTests: XCTestCase {
         let raw = "Ada: Reporting in. Bertrand: I disagree. You: stop it."
         XCTAssertEqual(vm.cleanedTurnText(raw, speaker: ada), "Reporting in.")
     }
+
+    func test_samplingPreset_nearestMapsWriterTemperature() {
+        XCTAssertEqual(SamplingPreset.nearest(temperature: 0.3), .strict)
+        XCTAssertEqual(SamplingPreset.nearest(temperature: 0.7), .relaxed)
+        XCTAssertEqual(SamplingPreset.nearest(temperature: 0.9), .spirited)
+        XCTAssertEqual(SamplingPreset.nearest(temperature: 1.1), .butterflyChaser)
+    }
+
+    func test_runOneTurn_sendsPresetSamplingAndRepeatPenalty() async throws {
+        LLMStubURLProtocol.setResponse(sse("hi"))
+        let vm = try makeVM(pinnedModel: "m", connectedModel: "m")
+        vm.cast = [Persona(name: "Ada", voiceID: "x", systemPrompt: "", samplingPreset: .butterflyChaser)]
+
+        _ = await vm.runOneTurn(lastSpeaker: nil)
+
+        let body = try requestBody()
+        XCTAssertEqual(try XCTUnwrap(body["temperature"] as? Double), 1.1, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(body["top_p"] as? Double), 0.98, accuracy: 0.0001)
+        XCTAssertEqual(body["top_k"] as? Int, 100)
+        XCTAssertEqual(try XCTUnwrap(body["repeat_penalty"] as? Double), 1.2, accuracy: 0.0001)
+    }
 }
