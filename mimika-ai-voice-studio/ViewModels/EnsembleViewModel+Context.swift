@@ -43,6 +43,14 @@ extension EnsembleViewModel {
             }
         }
 
+        // First turn of the scene — there is nothing to react to yet. Hand the
+        // model a concrete, benign kickoff instead of an EMPTY messages array:
+        // generating an assistant turn into a void lets a weakly-aligned local
+        // model confabulate a request (occasionally a harmful one) out of nothing.
+        if windowed.isEmpty {
+            out.append(ChatMessage(role: .user, content: "You're opening the scene. Say your first line now — in character, on the established scene and topic, as one short spoken sentence."))
+        }
+
         // If my own line is the most recent, nudge for a NEW line rather than an
         // echo — local models sometimes need the trailing-user-turn convention.
         if windowed.last?.speakerID == me.id {

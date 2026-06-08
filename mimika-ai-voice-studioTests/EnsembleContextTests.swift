@@ -68,4 +68,12 @@ final class EnsembleContextTests: XCTestCase {
         XCTAssertEqual(msgs.last?.role, .user)
         XCTAssertEqual(msgs.last?.content, "(continue)")
     }
+
+    func test_renderPOV_emptyTranscriptSeedsKickoffNotEmptyPrompt() {
+        let ada = persona("Ada")
+        let msgs = EnsembleViewModel.renderPOV(turns: [], for: ada, window: 16)
+        XCTAssertEqual(msgs.count, 1, "the first turn must seed a kickoff, never an empty prompt")
+        XCTAssertEqual(msgs.first?.role, .user)
+        XCTAssertFalse(msgs.first?.content.isEmpty ?? true)
+    }
 }
