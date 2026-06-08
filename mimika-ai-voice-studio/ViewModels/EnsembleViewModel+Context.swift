@@ -54,6 +54,9 @@ extension EnsembleViewModel {
 
     /// Instance convenience used by the turn loop.
     func messagesForPersona(_ me: Persona) -> [ChatMessage] {
-        Self.renderPOV(turns: turns, for: me, rollingSummary: rollingSummary, window: verbatimWindow)
+        // Render everything not yet folded into the rolling summary (at least the
+        // verbatim window), so no middle turn is lost while a summary is pending.
+        let effectiveWindow = max(verbatimWindow, turns.count - summarizedUpTo)
+        return Self.renderPOV(turns: turns, for: me, rollingSummary: rollingSummary, window: effectiveWindow)
     }
 }

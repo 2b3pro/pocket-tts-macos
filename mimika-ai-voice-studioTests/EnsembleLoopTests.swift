@@ -130,6 +130,30 @@ final class EnsembleLoopTests: XCTestCase {
         XCTAssertEqual(vm.runState, .idle, "no cast to resume → idle")
     }
 
+    // MARK: - Context management (Phase 5)
+
+    func test_shouldSummarize_firesPastWindowPlusBatch() {
+        XCTAssertFalse(EnsembleViewModel.shouldSummarize(turnCount: 23, verbatimWindow: 16, summarizedUpTo: 0, batch: 8))
+        XCTAssertTrue(EnsembleViewModel.shouldSummarize(turnCount: 24, verbatimWindow: 16, summarizedUpTo: 0, batch: 8))
+        // After folding through 8, it needs 8 more out-of-window turns.
+        XCTAssertFalse(EnsembleViewModel.shouldSummarize(turnCount: 31, verbatimWindow: 16, summarizedUpTo: 8, batch: 8))
+        XCTAssertTrue(EnsembleViewModel.shouldSummarize(turnCount: 32, verbatimWindow: 16, summarizedUpTo: 8, batch: 8))
+    }
+
+    func test_messagesForPersona_keepsUnsummarizedTurns_noGap() throws {
+        let vm = try makeVM(pinnedModel: "m", connectedModel: "m")
+        let ada = Persona(name: "Ada", voiceID: "x", systemPrompt: "")
+        vm.cast = [ada]
+        vm.verbatimWindow = 4
+        vm.turns = (0..<10).map { EnsembleTurn(speakerID: ada.id, speakerName: "Ada", content: "line \($0)") }
+        vm.summarizedUpTo = 2          // turns 0–1 folded into the summary
+        vm.rollingSummary = "earlier stuff"
+        let msgs = vm.messagesForPersona(ada)
+        let verbatim = msgs.filter { $0.content.contains("line ") }
+        XCTAssertEqual(verbatim.count, 8, "all 8 un-summarized turns shown — none lost to the window")
+        XCTAssertTrue(msgs.contains { $0.content.contains("earlier stuff") }, "rolling summary is prepended")
+    }
+
     private func requestBody() throws -> [String: Any] {
         let body = try XCTUnwrap(LLMStubURLProtocol.capturedBody())
         return try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])

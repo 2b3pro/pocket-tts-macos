@@ -76,6 +76,10 @@ final class EnsembleViewModel {
     // MARK: - Context window
     var verbatimWindow: Int = 16
     var rollingSummary: String = ""
+    /// Turns [0..<summarizedUpTo] are folded into `rollingSummary`; the rest
+    /// render verbatim. Advanced by the background summarizer.
+    var summarizedUpTo: Int = 0
+    var rollingSummaryEnabled: Bool = true
 
     // MARK: - Deps
     private let engine: any TTSEngineProtocol
@@ -97,6 +101,10 @@ final class EnsembleViewModel {
     /// One-shot guard so the surface auto-loads the last saved cast exactly once
     /// on first appear (and never clobbers an in-progress conversation later).
     private var didAttemptAutoLoad = false
+    /// Background rolling-summary task (one at a time) + how many out-of-window
+    /// turns accumulate before a fold runs.
+    private var summaryTask: Task<Void, Never>?
+    private static let summaryBatchSize = 8
 
     private static let fallbackURL = URL(string: "http://localhost:1234")!
 
@@ -212,6 +220,8 @@ final class EnsembleViewModel {
         userPeer.name = trimmedName.isEmpty ? "You" : trimmedName
         turns = []
         rollingSummary = ""
+        summarizedUpTo = 0
+        summaryTask?.cancel(); summaryTask = nil
         shuffledOrder = []
         orderCursor = 0
         producedThisRun = 0
@@ -271,6 +281,8 @@ final class EnsembleViewModel {
         if !saved.writerModel.isEmpty { selectedModel = saved.writerModel }
         turns = []
         rollingSummary = ""
+        summarizedUpTo = 0
+        summaryTask?.cancel(); summaryTask = nil
         shuffledOrder = []
         orderCursor = 0
         producedThisRun = 0
@@ -438,6 +450,7 @@ final class EnsembleViewModel {
             if !produced || Task.isCancelled { break }
             lastSpeaker = turns.last?.speakerID
             producedThisRun += 1
+            refreshSummaryIfNeeded()
             if advanceMode == .step {
                 runState = .awaitingStep
                 return
@@ -453,6 +466,59 @@ final class EnsembleViewModel {
         // keeps `.error` visible instead of resetting to `.idle`.
         if !Task.isCancelled {
             if case .error = runState {} else { runState = .idle }
+        }
+    }
+
+    // MARK: - Rolling summary (Phase 5 — context management)
+
+    /// Decide whether enough turns have fallen out of the verbatim window since
+    /// the last fold to warrant another background summary. Pure, for testing.
+    static func shouldSummarize(turnCount: Int, verbatimWindow: Int, summarizedUpTo: Int, batch: Int) -> Bool {
+        (turnCount - verbatimWindow) - summarizedUpTo >= batch
+    }
+
+    /// After a turn, fold any newly out-of-window turns into the rolling summary
+    /// in the background (one at a time, off the critical path) so long sessions
+    /// stay within the model's context window.
+    private func refreshSummaryIfNeeded() {
+        guard rollingSummaryEnabled, summaryTask == nil else { return }
+        guard Self.shouldSummarize(turnCount: turns.count, verbatimWindow: verbatimWindow,
+                                   summarizedUpTo: summarizedUpTo, batch: Self.summaryBatchSize) else { return }
+        let target = turns.count - verbatimWindow
+        let newTurns = Array(turns[summarizedUpTo..<target])
+        let prior = rollingSummary
+        summaryTask = Task { [weak self] in
+            guard let self else { return }
+            let summary = await self.summarize(newTurns, prior: prior)
+            if !summary.isEmpty {
+                self.rollingSummary = summary
+                self.summarizedUpTo = target
+            }
+            self.summaryTask = nil
+        }
+    }
+
+    /// One background LLM call that folds `newTurns` into `prior`, producing a
+    /// tight running summary. Streams (+ reasoning fallback) like the persona-
+    /// writer so it works on reasoning models too. Returns `prior` on failure so
+    /// a hiccup never wipes the summary.
+    private func summarize(_ newTurns: [EnsembleTurn], prior: String) async -> String {
+        let lines = newTurns.map { "\($0.speakerName): \($0.content)" }.joined(separator: "\n")
+        let system = "You maintain a running third-person summary of a group conversation, used as context. Keep it tight (3-6 sentences): who is involved, the key points and disagreements, and any unresolved threads. Output ONLY the summary."
+        let user = prior.isEmpty
+            ? "Summarize the conversation so far:\n\(lines)"
+            : "Summary so far:\n\(prior)\n\nNew exchanges to fold in:\n\(lines)\n\nReturn one updated, combined summary."
+        do {
+            var raw = ""
+            let stream = makeClient().streamChat(
+                messages: [ChatMessage(role: .user, content: user)],
+                model: resolvedModel, systemPrompt: system, temperature: 0.3, includeReasoning: true
+            )
+            for try await delta in stream { raw += delta }
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? prior : trimmed
+        } catch {
+            return prior
         }
     }
 
