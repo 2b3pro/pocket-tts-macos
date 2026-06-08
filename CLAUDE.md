@@ -4,6 +4,16 @@ Single-shot context for any Claude Code session working in this repo. Read first
 
 > **Note:** This file is intentionally checked in (no symlink trick) so the project is self-contained for fresh sessions.
 
+> **Headless build:** there's a `swift build` CLI/daemon track (branch `headless-daemon`,
+> re-baselined onto the Mimika rebrand as `headless-daemon-mimika`) that links the
+> UI-free `Engine/TTS/` + `Engine/Audio/` + `Audio/` sources to run the Core ML
+> engine without the GUI — for PAI's VoiceServer. It ships its own
+> `headless/ModelPaths.swift` (env-override via `POCKET_TTS_RESOURCES`, no
+> `BundledMLModelManager`). See [`docs/HEADLESS_DAEMON.md`](docs/HEADLESS_DAEMON.md)
+> and [`docs/UPSTREAM.md`](docs/UPSTREAM.md). NB: this app's "Mimika" name is John
+> Saunders' rebrand of pocket-tts-macos — unrelated to the separate PAI
+> "MimikaStudio" voice project.
+
 ---
 
 ## Project Overview
