@@ -40,7 +40,7 @@ struct EnsembleSetupView: View {
     }
 
     var body: some View {
-        ModalContainer(title: "New Ensemble Cast", onClose: onDone) {
+        ModalContainer(title: "New Ensemble Cast", onClose: onDone, fillsSheet: true) {
             VStack(alignment: .leading, spacing: Theme.space4) {
                 switch step {
                 case .count:   countStep
