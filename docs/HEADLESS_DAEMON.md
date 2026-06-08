@@ -12,6 +12,12 @@
 > added localized resources under the repo root) and links
 > `Engine/Audio/AudioBuffer.swift` (new `WAVEncoder.write(audioBuffer:)` overload).
 > Full provenance: [`UPSTREAM.md`](UPSTREAM.md).
+>
+> **Deferred (2026-06-07):** the re-baseline pulled in
+> `TextNormalizer.stripWhisperArtifacts` (strips `[silence]`/`[music]`/`>>` etc.)
+> but it is NOT wired into the synth path — dormant. Not needed while the daemon's
+> only input is clean VoiceServer persona text. Wire it into `TTSEngine`'s
+> normalize step only if the daemon is ever fed transcription/caption text.
 
 Status doc for the `headless-daemon` branch. Goal: run the app's **Core ML**
 pocket-tts engine with no GUI, so PAI's VoiceServer can drive low-latency,
