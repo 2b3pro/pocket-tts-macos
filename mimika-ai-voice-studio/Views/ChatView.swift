@@ -15,6 +15,10 @@ struct ChatView: View {
     let onOpenSettings: () -> Void
     var onOpenInMultiTalk: ((PendingReuse) -> Void)?
 
+    @State private var ensembleViewMode: ViewMode = .transcript
+    @State private var showsEnsembleSetup = false
+    @State private var showsEnsembleCastEditor = false
+
     var body: some View {
         VStack(spacing: 0) {
             topBar
@@ -29,10 +33,18 @@ struct ChatView: View {
                 Divider().background(Theme.borderColor)
                 composer
             } else {
-                EnsembleSurfaceView(viewModel: ensembleViewModel, player: player, voices: voices, appState: appState)
+                EnsembleSurfaceView(viewModel: ensembleViewModel, player: player, viewMode: ensembleViewMode)
             }
         }
         .onAppear { viewModel.startHealthChecks() }
+        .sheet(isPresented: $showsEnsembleSetup) {
+            EnsembleSetupView(viewModel: ensembleViewModel, voices: voices, appState: appState,
+                              onDone: { showsEnsembleSetup = false })
+        }
+        .sheet(isPresented: $showsEnsembleCastEditor) {
+            EnsembleCastEditorSheet(viewModel: ensembleViewModel, voices: voices,
+                                    onClose: { showsEnsembleCastEditor = false })
+        }
     }
 
     // MARK: - Top bar
@@ -48,9 +60,7 @@ struct ChatView: View {
             .fixedSize()
             .accessibilityIdentifier("chat.subModeToggle")
 
-            if subMode == .solo {
-                ConnectionStatusPill(state: viewModel.connectionState)
-            }
+            ConnectionStatusPill(state: subMode == .solo ? viewModel.connectionState : ensembleViewModel.connectionState)
 
             Spacer()
 
@@ -89,6 +99,8 @@ struct ChatView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Refresh connection")
+            } else {
+                ensembleControls
             }
 
             Button(action: onOpenSettings) {
@@ -103,6 +115,84 @@ struct ChatView: View {
         .padding(.horizontal, Theme.space6)
         .padding(.vertical, Theme.space3)
         .background(Theme.bgPrimary)
+    }
+
+    // MARK: - Ensemble controls (hosted in the shared top bar)
+
+    @ViewBuilder
+    private var ensembleControls: some View {
+        if let color = ensembleSpeakerColor {
+            Circle().fill(color).frame(width: 8, height: 8)
+        }
+        Text(ensembleStatusText)
+            .font(Theme.fontXS).foregroundStyle(Theme.textSecondary)
+
+        if ensembleViewModel.canExport {
+            Button(action: { ensembleViewModel.saveEpisodeToHistory() }) {
+                Image(systemName: "square.and.arrow.down")
+                    .font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+            }
+            .buttonStyle(.plain).help("Save episode to History")
+            .accessibilityIdentifier("ensemble.saveHistory")
+
+            Button(action: { ensembleViewModel.openInMultiTalk() }) {
+                Image(systemName: "person.2.wave.2")
+                    .font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+            }
+            .buttonStyle(.plain).help("Open episode in Multi-Talk")
+            .accessibilityIdentifier("ensemble.openMultiTalk")
+        }
+
+        Button(action: { ensembleViewMode = (ensembleViewMode == .orb ? .transcript : .orb) }) {
+            Image(systemName: ensembleViewMode == .orb ? "list.bullet" : "circle.fill")
+                .font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+        }
+        .buttonStyle(.plain).help(ensembleViewMode == .orb ? "Show transcript" : "Show orb")
+        .accessibilityIdentifier("ensemble.viewModeToggle")
+
+        if !ensembleViewModel.cast.isEmpty {
+            Button(action: { showsEnsembleCastEditor = true }) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+            }
+            .buttonStyle(.plain).help("Edit cast voices & delivery")
+            .accessibilityIdentifier("ensemble.editCast")
+        }
+
+        if ensembleViewModel.hasSavedCast {
+            Button(action: { ensembleViewModel.reuseLastCast() }) {
+                Label("Reuse Last", systemImage: "clock.arrow.circlepath")
+                    .font(Theme.fontXS).foregroundStyle(Theme.accent)
+            }
+            .buttonStyle(.plain)
+            .help("Reload your most recent cast — same speakers, scene, and voices")
+            .accessibilityIdentifier("ensemble.reuseLast")
+        }
+
+        Button(action: { showsEnsembleSetup = true }) {
+            Label("New Cast", systemImage: "person.3.sequence.fill")
+                .font(Theme.fontXS).foregroundStyle(Theme.accent)
+        }
+        .buttonStyle(.plain).help("Generate a new cast with the persona-writer")
+        .accessibilityIdentifier("ensemble.newCast")
+    }
+
+    private var ensembleStatusText: String {
+        switch ensembleViewModel.runState {
+        case .idle:         return "Idle"
+        case .picking:      return "Choosing next speaker…"
+        case .generating:   return "\(ensembleViewModel.currentSpeakerName ?? "Someone") is thinking…"
+        case .speaking:     return "\(ensembleViewModel.currentSpeakerName ?? "Someone") is talking…"
+        case .awaitingStep: return "Paused — Step or Resume"
+        case .userTurn:     return "Your turn…"
+        case let .error(m): return "Error: \(m)"
+        }
+    }
+
+    private var ensembleSpeakerColor: Color? {
+        guard let id = ensembleViewModel.currentSpeakerID,
+              let idx = ensembleViewModel.cast.firstIndex(where: { $0.id == id }) else { return nil }
+        return Theme.speakerColor(at: idx)
     }
 
     // MARK: - Transcript
