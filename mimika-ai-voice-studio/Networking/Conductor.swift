@@ -52,13 +52,12 @@ nonisolated enum Conductor {
             }
         }
 
-        #if DEBUG
-        // Diagnostic: lets you verify the conductor's choice in the Xcode console
-        // — e.g. "[Conductor] mention-override → Dana Scully" when you address
-        // someone by name.
+        // Diagnostic (un-gated, like the always-on [PocketTTS] logs — DEBUG is
+        // only set in the Debug config, so a Release run would strip a #if DEBUG
+        // block): verify the conductor's choice in the console, e.g.
+        // "[Conductor] mention-override → Dana Scully" when you address someone.
         let name = cast.first { $0.id == picked }?.name ?? "—"
         print("[Conductor] \(rule) → \(name)")
-        #endif
         return picked
     }
 
