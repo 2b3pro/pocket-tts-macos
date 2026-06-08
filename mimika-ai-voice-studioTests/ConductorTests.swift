@@ -48,6 +48,31 @@ final class ConductorTests: XCTestCase {
         XCTAssertNil(Conductor.detectMention(in: "I met a Benjamin yesterday.", cast: [a, b], excluding: a.id))
     }
 
+    func test_detectMention_picksByFirstOrLastName() {
+        let scully = persona("Dana Scully"), mulder = persona("Fox Mulder")
+        // Addressing by first name (the natural form) resolves to the full name.
+        XCTAssertEqual(
+            Conductor.detectMention(in: "Dana, want to share a room tonight?", cast: [scully, mulder], excluding: nil),
+            scully.id
+        )
+        // Last name works too.
+        XCTAssertEqual(
+            Conductor.detectMention(in: "What did the file say, Mulder?", cast: [scully, mulder], excluding: nil),
+            mulder.id
+        )
+    }
+
+    func test_detectMention_ambiguousFirstNameDefersToMode() {
+        let danaS = persona("Dana Scully"), danaB = persona("Dana Barrett")
+        // "Dana" matches both → ambiguous → nil (let the mode pick).
+        XCTAssertNil(Conductor.detectMention(in: "Dana, your thoughts?", cast: [danaS, danaB], excluding: nil))
+        // A distinguishing surname still resolves.
+        XCTAssertEqual(
+            Conductor.detectMention(in: "Scully, your thoughts?", cast: [danaS, danaB], excluding: nil),
+            danaS.id
+        )
+    }
+
     // MARK: - pickNext
 
     func test_pickNext_mentionOverridesMode() {

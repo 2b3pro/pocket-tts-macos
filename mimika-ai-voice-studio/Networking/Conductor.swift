@@ -29,43 +29,75 @@ nonisolated enum Conductor {
     ) -> UUID? {
         guard !cast.isEmpty else { return nil }
 
+        let picked: UUID?
+        let rule: String
+
         // 1) Mention override — highest priority, free, honored by every mode.
         if let last = turns.last,
            let mentioned = detectMention(in: last.content, cast: cast, excluding: last.speakerID) {
-            return mentioned
+            picked = mentioned
+            rule = "mention-override"
+        } else {
+            // 2) Mode-specific base selection.
+            switch mode {
+            case .roundRobin:
+                picked = roundRobinNext(cast: cast, rng: rng,
+                                        shuffledOrder: &shuffledOrder, cursor: &cursor, using: &generator)
+                rule = "round-robin"
+            case .weightedRandom, .director:
+                let pool = cast.filter { $0.id != lastSpeaker }
+                let candidates = pool.isEmpty ? cast : pool
+                picked = weightedChoice(candidates, using: &generator)?.id
+                rule = (mode == .director) ? "weighted (director fallback)" : "weighted-random"
+            }
         }
 
-        // 2) Mode-specific base selection.
-        switch mode {
-        case .roundRobin:
-            return roundRobinNext(cast: cast, rng: rng,
-                                  shuffledOrder: &shuffledOrder, cursor: &cursor, using: &generator)
-        case .weightedRandom, .director:
-            let pool = cast.filter { $0.id != lastSpeaker }
-            let candidates = pool.isEmpty ? cast : pool
-            return weightedChoice(candidates, using: &generator)?.id
-        }
+        #if DEBUG
+        // Diagnostic: lets you verify the conductor's choice in the Xcode console
+        // — e.g. "[Conductor] mention-override → Dana Scully" when you address
+        // someone by name.
+        let name = cast.first { $0.id == picked }?.name ?? "—"
+        print("[Conductor] \(rule) → \(name)")
+        #endif
+        return picked
     }
 
     /// Detect a direct address of another cast member in `text`. Scans only the
     /// last ~120 chars (a direct address lands near the end of a line, not in a
     /// passing "as Marx said earlier…"), case-insensitive, word-boundary,
     /// longest-name-first so "Jean-Luc" beats "Luc". Excludes self-mentions.
+    ///
+    /// Matches the FULL name first, then falls back to a first/last-name word
+    /// ("Dana" → "Dana Scully") so addressing someone casually works — but only
+    /// when exactly one cast member matches that word, so an ambiguous first name
+    /// (two "Dana"s) can't mis-route and instead defers to the mode.
     static func detectMention(in text: String, cast: [Persona], excluding selfID: UUID?) -> UUID? {
         let tail = String(text.suffix(120)).lowercased()
         guard !tail.isEmpty else { return nil }
         let candidates = cast
             .filter { $0.id != selfID }
             .sorted { $0.name.count > $1.name.count }
-        for persona in candidates {
-            let needle = persona.name.lowercased()
-            guard !needle.isEmpty else { continue }
+
+        func present(_ needle: String) -> Bool {
+            guard needle.count >= 2 else { return false }
             let pattern = "\\b\(NSRegularExpression.escapedPattern(for: needle))\\b"
-            if tail.range(of: pattern, options: .regularExpression) != nil {
-                return persona.id
+            return tail.range(of: pattern, options: .regularExpression) != nil
+        }
+
+        // 1) Full-name address — most specific, longest first.
+        for persona in candidates where present(persona.name.lowercased()) {
+            return persona.id
+        }
+
+        // 2) First/last-name address — accept only if unambiguous.
+        var matched = Set<UUID>()
+        for persona in candidates {
+            let words = persona.name.lowercased().split(separator: " ").map(String.init)
+            if words.contains(where: { $0.count >= 3 && present($0) }) {
+                matched.insert(persona.id)
             }
         }
-        return nil
+        return matched.count == 1 ? matched.first : nil
     }
 
     /// Weighted random pick. Weights are clamped to a tiny positive floor so a
