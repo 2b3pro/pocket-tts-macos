@@ -170,6 +170,7 @@ final class LLMStubURLProtocol: URLProtocol {
     nonisolated(unsafe) private static var canned: Canned?
     nonisolated(unsafe) private static var queue: [Canned] = []
     nonisolated(unsafe) private static var lastBody: Data?
+    nonisolated(unsafe) private static var lastHeaders: [String: String]?
     nonisolated(unsafe) private(set) static var requestCount = 0
     private static let lock = NSLock()
 
@@ -178,6 +179,7 @@ final class LLMStubURLProtocol: URLProtocol {
         canned = nil
         queue.removeAll()
         lastBody = nil
+        lastHeaders = nil
         requestCount = 0
     }
 
@@ -198,11 +200,17 @@ final class LLMStubURLProtocol: URLProtocol {
         return lastBody
     }
 
+    static func capturedHeaders() -> [String: String]? {
+        lock.lock(); defer { lock.unlock() }
+        return lastHeaders
+    }
+
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
         captureBody()
+        Self.setHeaders(request.allHTTPHeaderFields)
         Self.bumpRequestCount()
 
         let response = Self.read()
@@ -232,6 +240,11 @@ final class LLMStubURLProtocol: URLProtocol {
     private static func bumpRequestCount() {
         lock.lock(); defer { lock.unlock() }
         requestCount += 1
+    }
+
+    private static func setHeaders(_ headers: [String: String]?) {
+        lock.lock(); defer { lock.unlock() }
+        lastHeaders = headers
     }
 
     private func captureBody() {

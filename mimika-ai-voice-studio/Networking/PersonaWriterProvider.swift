@@ -99,16 +99,26 @@ nonisolated struct AnthropicPersonaWriterProvider: PersonaWriterProvider {
                 return try JSONExtractor.decode(T.self, from: raw)
             } catch {
                 if Task.isCancelled || error is CancellationError { throw error }
+                // Don't burn retries on a bad key / schema / model or a refusal —
+                // surface those immediately with their real message.
+                if let ce = error as? AnthropicMessagesClient.ClientError, !ce.isRetryable { throw ce }
                 lastError = error
             }
         }
+        // Preserve the real API error rather than masking it as "incomplete JSON".
+        if let ce = lastError as? AnthropicMessagesClient.ClientError { throw ce }
         throw PersonaWriterError.invalidJSON(underlying: lastError)
     }
 
     func health() async -> ProviderHealth {
         guard !client.apiKey.isEmpty else { return .down(reason: "no Claude API key") }
         do {
-            _ = try await client.listModels()
+            let models = try await client.listModels()
+            // A stale/retired configured model would otherwise show "connected"
+            // and then fail at generation time.
+            if !models.isEmpty, !models.contains(model) {
+                return .down(reason: "model \(model) unavailable")
+            }
             return .ok(label: model)
         } catch {
             return .down(reason: personaProviderShortError(error))

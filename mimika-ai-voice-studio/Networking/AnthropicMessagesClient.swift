@@ -19,14 +19,28 @@ nonisolated struct AnthropicMessagesClient: Sendable {
 
     enum ClientError: Error, CustomStringConvertible {
         case http(status: Int, message: String?)
+        case refusal(String?)
+        case maxTokens
         case noTextBlock
         case decode(String)
 
         var description: String {
             switch self {
             case let .http(status, message): return "Anthropic HTTP \(status)\(message.map { ": \($0)" } ?? "")"
+            case let .refusal(reason): return "Claude refused the request\(reason.map { ": \($0)" } ?? "")"
+            case .maxTokens: return "Claude hit max_tokens before completing the JSON"
             case .noTextBlock: return "Anthropic response had no text block"
             case let .decode(s): return "failed to decode Anthropic response: \(s)"
+            }
+        }
+
+        /// Whether a retry could plausibly help. 4xx (bad key/schema/model) and
+        /// refusals won't change on retry; 429/5xx, truncation, and decode might.
+        var isRetryable: Bool {
+            switch self {
+            case let .http(status, _): return status == 429 || (500...599).contains(status)
+            case .maxTokens, .noTextBlock, .decode: return true
+            case .refusal: return false
             }
         }
     }
@@ -65,8 +79,12 @@ nonisolated struct AnthropicMessagesClient: Sendable {
             "messages": [["role": "user", "content": user]],
         ]
         if !system.isEmpty { body["system"] = system }
-        if let schemaJSON,
-           let schemaObj = try? JSONSerialization.jsonObject(with: Data(schemaJSON.utf8)) {
+        if let schemaJSON {
+            // Never silently downgrade to unconstrained text: a non-nil-but-bad
+            // schema is a programming error, surface it.
+            guard let schemaObj = try? JSONSerialization.jsonObject(with: Data(schemaJSON.utf8)) else {
+                throw ClientError.decode("invalid output schema JSON")
+            }
             body["output_config"] = ["format": ["type": "json_schema", "schema": schemaObj]]
         }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -80,6 +98,14 @@ nonisolated struct AnthropicMessagesClient: Sendable {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let content = obj["content"] as? [[String: Any]] else {
             throw ClientError.decode("unexpected response shape")
+        }
+        // A 200 can still be off-schema: a refusal or a max_tokens truncation
+        // both yield text that won't satisfy the schema. Surface them explicitly
+        // instead of letting the caller fail later with a generic decode error.
+        switch obj["stop_reason"] as? String {
+        case "refusal":    throw ClientError.refusal(nil)
+        case "max_tokens": throw ClientError.maxTokens
+        default: break
         }
         for block in content where (block["type"] as? String) == "text" {
             if let text = block["text"] as? String, !text.isEmpty { return text }

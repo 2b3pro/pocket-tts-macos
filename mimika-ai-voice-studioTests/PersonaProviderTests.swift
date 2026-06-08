@@ -107,4 +107,67 @@ final class PersonaProviderTests: XCTestCase {
         XCTAssertEqual(loaded.kind, .anthropic)
         XCTAssertEqual(loaded.anthropicModel, "claude-sonnet-4-6")
     }
+
+    // MARK: - Request shape + retry policy
+
+    private func header(_ headers: [String: String], _ name: String) -> String? {
+        headers.first { $0.key.caseInsensitiveCompare(name) == .orderedSame }?.value
+    }
+
+    func test_anthropicClient_sendsStructuredRequestWithoutTemperature() async throws {
+        LLMStubURLProtocol.setResponse(anthropicResponse(#"{"scene":"s","mood":"m","cast":[]}"#))
+        let client = AnthropicMessagesClient(apiKey: "secret-key", session: stubSession())
+        _ = try await client.complete(model: "claude-haiku-4-5", system: "sys", user: "usr", schemaJSON: PersonaWriterSchemas.skeleton)
+
+        let body = try XCTUnwrap(LLMStubURLProtocol.capturedBody())
+        let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(obj["model"] as? String, "claude-haiku-4-5")
+        XCTAssertNil(obj["temperature"], "temperature must be omitted (Opus 4.8/4.7 reject it)")
+        let format = try XCTUnwrap((obj["output_config"] as? [String: Any])?["format"] as? [String: Any])
+        XCTAssertEqual(format["type"] as? String, "json_schema")
+        XCTAssertNotNil(format["schema"])
+
+        let headers = try XCTUnwrap(LLMStubURLProtocol.capturedHeaders())
+        XCTAssertEqual(header(headers, "x-api-key"), "secret-key")
+        XCTAssertEqual(header(headers, "anthropic-version"), "2023-06-01")
+    }
+
+    func test_anthropicProvider_doesNotRetryRefusal() async {
+        LLMStubURLProtocol.setResponse(Data(#"{"content":[],"stop_reason":"refusal"}"#.utf8))
+        let provider = AnthropicPersonaWriterProvider(
+            client: AnthropicMessagesClient(apiKey: "k", session: stubSession()), model: "claude-haiku-4-5"
+        )
+        do {
+            _ = try await provider.requestJSON(CastSkeleton.self, system: "s", user: "u",
+                                               schema: PersonaWriterSchemas.skeleton, temperature: 0.5, attempts: 3)
+            XCTFail("a refusal should surface, not retry")
+        } catch {}
+        XCTAssertEqual(LLMStubURLProtocol.requestCount, 1, "refusal is non-retryable")
+    }
+
+    func test_anthropicProvider_doesNotRetry4xx() async {
+        LLMStubURLProtocol.setResponse(Data(#"{"error":{"message":"invalid x-api-key"}}"#.utf8), statusCode: 401)
+        let provider = AnthropicPersonaWriterProvider(
+            client: AnthropicMessagesClient(apiKey: "bad", session: stubSession()), model: "claude-haiku-4-5"
+        )
+        do {
+            _ = try await provider.requestJSON(PersonaFull.self, system: "s", user: "u",
+                                               schema: PersonaWriterSchemas.persona, temperature: 0.4, attempts: 3)
+            XCTFail("a 401 should surface, not retry")
+        } catch {
+            XCTAssertTrue("\(error)".contains("401") || "\(error)".lowercased().contains("invalid"),
+                          "surfaces the real API error, not 'incomplete JSON'")
+        }
+        XCTAssertEqual(LLMStubURLProtocol.requestCount, 1, "4xx is non-retryable")
+    }
+
+    func test_decodeReads_emptyNullAbsentAllYieldEmpty() throws {
+        func reads(_ json: String) throws -> [String: String] {
+            try JSONDecoder().decode(PersonaStub.self, from: Data(json.utf8)).readsOnOthers
+        }
+        XCTAssertEqual(try reads(#"{"name":"A","voice":"v","reads_on_others":[]}"#), [:])
+        XCTAssertEqual(try reads(#"{"name":"A","voice":"v","reads_on_others":{}}"#), [:])
+        XCTAssertEqual(try reads(#"{"name":"A","voice":"v","reads_on_others":null}"#), [:])
+        XCTAssertEqual(try reads(#"{"name":"A","voice":"v"}"#), [:])
+    }
 }
