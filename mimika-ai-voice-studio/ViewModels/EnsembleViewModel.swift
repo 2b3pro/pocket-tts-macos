@@ -675,7 +675,7 @@ final class EnsembleViewModel {
     private func framedSystemPrompt(_ persona: Persona, grenade: Bool = false) -> String {
         // Always-on: identity + "only your own single line" (stops the model
         // from scripting the whole table) + no meta. Scene/mood added when set.
-        var context = "You are \(persona.name). Respond ONLY as \(persona.name), with a single short line of spoken dialogue. Do NOT write lines for any other character, and do NOT prefix your reply with a name. Remain fully in character; never refer to yourself as an AI, a model, or an assistant."
+        var context = "You are \(persona.name). Respond ONLY as \(persona.name), with a single short line of spoken dialogue — just the words you say out loud, in the first person. Do NOT wrap your line in quotation marks. Do NOT narrate actions, gestures, tone, or expressions, and never describe yourself in the third person (no \"he said\", no \"she replies calmly\", no \"*sighs*\"). Do NOT write lines for any other character, and do NOT prefix your reply with a name. Remain fully in character; never refer to yourself as an AI, a model, or an assistant."
         // Introduce the human so the cast treats them as a real participant to
         // engage — not just another line of scene text. (Their turns arrive
         // prefixed "<name>:" in the transcript, which a small model can

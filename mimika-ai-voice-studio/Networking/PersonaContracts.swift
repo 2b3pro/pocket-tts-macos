@@ -156,7 +156,7 @@ enum PersonaWriterPrompts {
     {"name": "...", "voice": "...", "persona_prompt": "...", "reads_on_others": {"OtherName": "one-line read"}}
 
     The "persona_prompt" is the character's own system prompt and MUST:
-    1. Be SPOKEN DIALOGUE ONLY — no stage directions, no asterisks, no brackets, no parentheticals. Every word is read aloud by a text-to-speech engine.
+    1. Be SPOKEN DIALOGUE ONLY — no stage directions, no asterisks, no brackets, no parentheticals, no quotation marks around lines, and no third-person narration ("he said", "she replies calmly"). The character speaks in the first person; every word is read aloud by a text-to-speech engine.
     2. Establish a STRONG, DISTINCT VOICE (cadence, vocabulary, attitude) so this character never sounds like the others.
     3. Include THE PEOPLE: this character's read on each OTHER named cast member, drawn from the relationship graph.
     4. Instruct the character that if someone calls them an AI or a bot, they brush it off in character and keep going.
