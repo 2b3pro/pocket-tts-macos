@@ -38,6 +38,8 @@ struct AppSettingsView: View {
     @State private var availableModels: [String] = []
     @State private var modelLoadError: String? = nil
     @State private var probeState: ProbeState = .idle
+    @State private var personaConfig = PersonaProviderStore.load()
+    @State private var anthropicKey = PersonaProviderStore.anthropicAPIKey()
 
     init(
         isPresented: Binding<Bool>,
@@ -66,6 +68,8 @@ struct AppSettingsView: View {
         ModalContainer(title: "App Settings", onClose: cancel) {
             VStack(alignment: .leading, spacing: Theme.space4) {
                 lmStudioSection
+                Divider().background(Theme.borderColor)
+                personaWriterSection
                 Divider().background(Theme.borderColor)
                 pocketTTSTuningSection
                 Divider().background(Theme.borderColor)
@@ -144,6 +148,48 @@ struct AppSettingsView: View {
                         .font(Theme.fontXS)
                         .foregroundStyle(Theme.errorFG)
                 }
+            }
+        }
+    }
+
+    private var personaWriterSection: some View {
+        VStack(alignment: .leading, spacing: Theme.space3) {
+            Text("Ensemble Persona Writer").font(Theme.fontSMBold).foregroundStyle(Theme.textPrimary)
+            Text("Who writes the cast when you create an Ensemble. Local uses the endpoint above; Claude uses the Anthropic API with structured outputs for more reliable, on-spec casts. Synthesis always stays on-device.")
+                .font(Theme.fontXS)
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Text("Provider").font(Theme.fontXS).foregroundStyle(Theme.textSecondary).frame(width: 90, alignment: .leading)
+                Picker("", selection: $personaConfig.kind) {
+                    ForEach(PersonaProviderKind.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                }
+                .pickerStyle(.menu).labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("appSettings.personaProvider")
+            }
+
+            if personaConfig.kind == .anthropic {
+                HStack {
+                    Text("API Key").font(Theme.fontXS).foregroundStyle(Theme.textSecondary).frame(width: 90, alignment: .leading)
+                    SecureField("sk-ant-…", text: $anthropicKey)
+                        .textFieldStyle(.plain)
+                        .padding(.horizontal, Theme.space3).padding(.vertical, Theme.space2)
+                        .themeInputField()
+                        .accessibilityIdentifier("appSettings.anthropicKey")
+                }
+                HStack {
+                    Text("Model").font(Theme.fontXS).foregroundStyle(Theme.textSecondary).frame(width: 90, alignment: .leading)
+                    Picker("", selection: $personaConfig.anthropicModel) {
+                        ForEach(PersonaProviderStore.anthropicModels, id: \.self) { Text($0).tag($0) }
+                    }
+                    .pickerStyle(.menu).labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("appSettings.anthropicModel")
+                }
+                Text("Stored in your Keychain — get a key at console.anthropic.com. Haiku is fastest/cheapest; Opus is most capable.")
+                    .font(Theme.fontXS)
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -232,6 +278,9 @@ struct AppSettingsView: View {
         // Remaining fields (model, etc.) still live in ChatSettings.
         settings = workingCopy
         onSave(workingCopy)
+        // Persona-writer provider config (UserDefaults) + API key (Keychain).
+        PersonaProviderStore.save(personaConfig)
+        PersonaProviderStore.setAnthropicAPIKey(anthropicKey)
         isPresented = false
     }
 
