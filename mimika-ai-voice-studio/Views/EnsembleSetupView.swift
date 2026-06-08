@@ -30,6 +30,10 @@ struct EnsembleSetupView: View {
     @State private var presetSelections: [Int: SamplingPreset] = [:]
     @State private var writer: PersonaWriter
     @State private var showsPromptManager = false
+    @State private var editTarget: PersonaEditTarget?
+
+    /// Identifiable wrapper so a persona index can drive a `.sheet(item:)`.
+    private struct PersonaEditTarget: Identifiable { let id: Int }
 
     init(viewModel: EnsembleViewModel, voices: [BundledVoice], appState: AppState, onDone: @escaping () -> Void) {
         self.viewModel = viewModel
@@ -57,6 +61,9 @@ struct EnsembleSetupView: View {
             }
             .sheet(isPresented: $showsPromptManager) {
                 PromptManagerSheet(isPresented: $showsPromptManager, scope: .ensemble)
+            }
+            .sheet(item: $editTarget) { target in
+                EnsemblePersonaEditorSheet(writer: writer, index: target.id) { editTarget = nil }
             }
         }
     }
@@ -202,6 +209,14 @@ struct EnsembleSetupView: View {
                                     Text(persona.voice).font(Theme.fontXS).foregroundStyle(Theme.textSecondary)
                                 }
                                 Spacer()
+                                Button(action: { editTarget = PersonaEditTarget(id: index) }) {
+                                    Image(systemName: "pencil")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Theme.accent)
+                                }
+                                .buttonStyle(.plain)
+                                .help("View / edit this persona's script")
+                                .accessibilityIdentifier("ensemble.editPersona")
                                 Picker("", selection: voiceBinding(for: persona, index: index)) {
                                     ForEach(voiceOptions) { option in Text(option.name).tag(option.id) }
                                 }
