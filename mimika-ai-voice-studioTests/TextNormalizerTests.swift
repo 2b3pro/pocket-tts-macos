@@ -102,6 +102,19 @@ final class TextNormalizerTests: XCTestCase {
         XCTAssertEqual(TextNormalizer.normalize("5:00"), "five o'clock")
     }
 
+    // MARK: - Years
+
+    func test_yearsUseSpokenYearStyle() {
+        XCTAssertEqual(TextNormalizer.normalize("The film came out in 1985."),
+                       "The film came out in nineteen eighty-five.")
+        XCTAssertEqual(TextNormalizer.normalize("1905 was strange."),
+                       "nineteen oh five was strange.")
+        XCTAssertEqual(TextNormalizer.normalize("The year 2001 is iconic."),
+                       "The year two thousand and one is iconic.")
+        XCTAssertEqual(TextNormalizer.normalize("The year 2026 is going well."),
+                       "The year twenty twenty-six is going well.")
+    }
+
     // MARK: - Ordinals
 
     func test_ordinals() {
@@ -723,7 +736,7 @@ final class TextNormalizerTests: XCTestCase {
     // MARK: - Smart-punctuation Tier 3: symbols, fractions, exponents
 
     func test_copyrightRegisteredTrademark() {
-        XCTAssertEqual(TextNormalizer.normalize("\u{00A9} 2026 Acme"), "copyright two thousand and twenty-six Acme")
+        XCTAssertEqual(TextNormalizer.normalize("\u{00A9} 2026 Acme"), "copyright twenty twenty-six Acme")
         XCTAssertEqual(TextNormalizer.normalize("Foo\u{00AE} bar"), "Foo registered bar")
         XCTAssertEqual(TextNormalizer.normalize("Quux\u{2122} brand"), "Quux trademark brand")
     }

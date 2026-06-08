@@ -116,4 +116,39 @@ final class PersonaWriterTests: XCTestCase {
         }
         XCTAssertEqual(LLMStubURLProtocol.requestCount, 3, "should try exactly `attempts` times")
     }
+
+    // MARK: - Name reconciliation
+
+    func test_reconcileNames_userNamesWinOverModelDuplicates() {
+        // The real bug: the user typed distinct names but the model returned two
+        // identical ones ("Data" came back as a second "William Riker").
+        let skel = CastSkeleton(scene: "s", mood: "m", cast: [
+            PersonaStub(name: "Commander William Riker"),
+            PersonaStub(name: "Commander William Riker"),
+        ])
+        let result = PersonaWriter.reconcileNames(skel, provided: ["Commander Riker", "Commander Data"])
+        XCTAssertEqual(result.cast.map(\.name), ["Commander Riker", "Commander Data"],
+                       "the user's distinct names override the model's duplicate")
+    }
+
+    func test_reconcileNames_pinsTypedNamesAndRemapsReads() {
+        let skel = CastSkeleton(scene: "s", mood: "m", cast: [
+            PersonaStub(name: "Jean-Luc Picard", readsOnOthers: ["Will Riker": "trusts him"]),
+            PersonaStub(name: "Will Riker", readsOnOthers: ["Jean-Luc Picard": "respects the captain"]),
+        ])
+        let result = PersonaWriter.reconcileNames(skel, provided: ["Picard", "Riker"])
+        XCTAssertEqual(result.cast.map(\.name), ["Picard", "Riker"], "names pinned to user input")
+        // Relationship-graph keys follow the rename.
+        XCTAssertEqual(result.cast[0].readsOnOthers["Riker"], "trusts him")
+        XCTAssertEqual(result.cast[1].readsOnOthers["Picard"], "respects the captain")
+    }
+
+    func test_reconcileNames_dedupesBlankInventedCollisions() {
+        // Two blank slots that both happened to invent "Bob".
+        let skel = CastSkeleton(scene: "s", mood: "m", cast: [
+            PersonaStub(name: "Bob"), PersonaStub(name: "Bob"),
+        ])
+        let result = PersonaWriter.reconcileNames(skel, provided: ["", ""])
+        XCTAssertEqual(result.cast.map(\.name), ["Bob", "Bob 2"])
+    }
 }

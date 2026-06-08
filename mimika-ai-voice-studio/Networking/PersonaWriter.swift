@@ -102,17 +102,23 @@ final class PersonaWriter {
                 temperature: 0.5
             )
             if Task.isCancelled { return }
-            skeleton = skel
+            // Pin the cast names back to what the user typed — local models
+            // routinely "canonicalize" or duplicate names (e.g. "Data" comes
+            // back as a second "William Riker") — and dedup whatever remains.
+            // The user's names always win.
+            let reconciled = Self.reconcileNames(skel, provided: names)
+            skeleton = reconciled
 
             var produced: [PersonaFull] = []
-            for stub in skel.cast {
+            for stub in reconciled.cast {
                 if Task.isCancelled { return }
-                let full = try await Self.requestJSON(
+                var full = try await Self.requestJSON(
                     PersonaFull.self, client: client, model: model,
                     system: expansionSystem,
-                    user: PersonaWriterPrompts.expansionUser(skeleton: skel, targetName: stub.name, scene: scene, mood: mood),
+                    user: PersonaWriterPrompts.expansionUser(skeleton: reconciled, targetName: stub.name, scene: scene, mood: mood),
                     temperature: 0.4
                 )
+                full.name = stub.name   // enforce the pinned name; the expansion can't rename it
                 produced.append(full)
                 personas = produced   // progressive update
             }
@@ -167,6 +173,52 @@ final class PersonaWriter {
             }
         }
         throw PersonaWriterError.invalidJSON(underlying: lastError)
+    }
+
+    // MARK: - Name reconciliation
+
+    /// Pin the writer's skeleton names back to the names the user typed and
+    /// guarantee uniqueness. Local models routinely rewrite or duplicate names
+    /// (e.g. "Data" comes back as a second "William Riker"); the names the user
+    /// provided always win, and any remaining collisions (two blanks that
+    /// invented the same name, or a genuinely repeated entry) are suffixed
+    /// " 2", " 3", … `reads_on_others` keys are remapped so the relationship
+    /// graph still points at the final names. Pure + nonisolated for testing.
+    nonisolated static func reconcileNames(_ skeleton: CastSkeleton, provided: [String]) -> CastSkeleton {
+        var stubs = skeleton.cast
+        let originalNames = stubs.map { $0.name }
+
+        // Final name per slot: the user's typed name where present, else the
+        // model's invented one; deduped generically (no name list anywhere).
+        var finalNames: [String] = []
+        var used = Set<String>()
+        for i in stubs.indices {
+            let typed = i < provided.count ? provided[i].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+            let base = typed.isEmpty ? stubs[i].name.trimmingCharacters(in: .whitespacesAndNewlines) : typed
+            let root = base.isEmpty ? "Speaker" : base
+            var name = root
+            var n = 1
+            while used.contains(name.lowercased()) { n += 1; name = "\(root) \(n)" }
+            used.insert(name.lowercased())
+            finalNames.append(name)
+        }
+
+        // old(model) -> new(final) so the relationship graph can be remapped.
+        var rename: [String: String] = [:]
+        for (old, new) in zip(originalNames, finalNames) {
+            let key = old.lowercased().trimmingCharacters(in: .whitespaces)
+            if !key.isEmpty { rename[key] = new }
+        }
+        for i in stubs.indices {
+            stubs[i].name = finalNames[i]
+            var remapped: [String: String] = [:]
+            for (key, value) in stubs[i].readsOnOthers {
+                let mapped = rename[key.lowercased().trimmingCharacters(in: .whitespaces)] ?? key
+                remapped[mapped] = value
+            }
+            stubs[i].readsOnOthers = remapped
+        }
+        return CastSkeleton(scene: skeleton.scene, mood: skeleton.mood, cast: stubs)
     }
 
     // MARK: - Internals

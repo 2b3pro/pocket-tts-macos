@@ -335,6 +335,7 @@ nonisolated enum TextNormalizer {
         t = replace(t, fractionPattern) { m, s in expandFraction(m, in: s) }
         t = replace(t, unitPattern) { m, s in expandNumberWithUnit(m, in: s) }
         t = replace(t, standaloneUnitPattern) { m, s in expandStandaloneUnit(m, in: s) }
+        t = replace(t, yearPattern) { m, s in expandYear(m, in: s) }
         t = replace(t, numberPattern) { m, s in expandNumber(m, in: s) }
         t = replace(t, domainTermPattern) { m, s in expandDomainTerm(m, in: s) }
         t = replace(t, acronymPattern) { m, s in expandAcronym(m, in: s) }
@@ -418,6 +419,10 @@ nonisolated enum TextNormalizer {
 
     private static let numberPattern = try! NSRegularExpression(
         pattern: "(?<!\\w)(-?\\d+(?:\\.\\d+)?)(?!\\w|%|:)", options: []
+    )
+
+    private static let yearPattern = try! NSRegularExpression(
+        pattern: "(?<!\\w)([12]\\d{3})(?!\\w|%|:)", options: []
     )
 
     private static let fractionPattern = try! NSRegularExpression(
@@ -562,6 +567,30 @@ nonisolated enum TextNormalizer {
     private static func expandNumber(_ m: NSTextCheckingResult, in s: String) -> String {
         guard let numStr = group(m, 1, in: s) else { return group(m, 0, in: s) ?? "" }
         return NumberToWords.cardinal(numStr)
+    }
+
+    private static func expandYear(_ m: NSTextCheckingResult, in s: String) -> String {
+        guard let yearStr = group(m, 1, in: s), let year = Int(yearStr) else {
+            return group(m, 0, in: s) ?? ""
+        }
+
+        if year == 2000 { return "two thousand" }
+        if (2001...2009).contains(year) {
+            return "two thousand and \(NumberToWords.cardinal(year % 2000))"
+        }
+        if (2010...2099).contains(year) {
+            return "twenty \(NumberToWords.cardinal(year % 2000))"
+        }
+
+        let firstTwo = year / 100
+        let lastTwo = year % 100
+        if lastTwo == 0 {
+            return "\(NumberToWords.cardinal(firstTwo)) hundred"
+        }
+        if lastTwo < 10 {
+            return "\(NumberToWords.cardinal(firstTwo)) oh \(NumberToWords.cardinal(lastTwo))"
+        }
+        return "\(NumberToWords.cardinal(firstTwo)) \(NumberToWords.cardinal(lastTwo))"
     }
 
     private static func expandDomainTerm(_ m: NSTextCheckingResult, in s: String) -> String {
