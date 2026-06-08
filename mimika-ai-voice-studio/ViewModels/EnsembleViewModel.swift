@@ -19,6 +19,7 @@
 
 import Foundation
 import Observation
+import SwiftData
 
 @MainActor
 @Observable
@@ -57,6 +58,20 @@ final class EnsembleViewModel {
     /// The model id chosen in setup — requested verbatim so LM Studio doesn't
     /// unload/reload a different model mid-turn. Falls back to chat settings.
     var selectedModel: String = ""
+
+    // MARK: - Dictation / barge-in (mirrors ChatViewModel)
+    var dictation: DictationStatus = .idle
+    let dictationController = DictationController()
+    var dictationStartingDraft: String = ""
+    var dictationCapturedText: String = ""
+
+    // MARK: - Saved-cast tracking + reuse confirmation
+    /// SwiftData id of the loaded cast — so post-creation voice/preset edits
+    /// persist back to the right saved cast.
+    var currentCastID: UUID?
+    /// Transient confirmation shown after an explicit "Reuse Last".
+    var castLoadedNotice: String?
+    private var noticeToken: UUID?
 
     // MARK: - Context window
     var verbatimWindow: Int = 16
@@ -217,6 +232,7 @@ final class EnsembleViewModel {
         let name = scene.isEmpty ? "Ensemble" : scene
         let castModel = EnsembleStore.create(ctx, name: name, scene: scene, mood: mood)
         castModel.writerModel = selectedModel   // persisted so reuse restores the model
+        currentCastID = castModel.id
         for (i, entry) in confirmed.enumerated() {
             EnsembleStore.addPersona(
                 ctx, to: castModel,
@@ -249,6 +265,7 @@ final class EnsembleViewModel {
         guard let ctx = appState.modelContext,
               let saved = EnsembleStore.casts(ctx).first else { return false }
         stop()
+        currentCastID = saved.id
         scene = saved.scene
         mood = saved.mood
         if !saved.writerModel.isEmpty { selectedModel = saved.writerModel }
@@ -269,6 +286,25 @@ final class EnsembleViewModel {
         return true
     }
 
+    /// Reuse the last cast AND show a transient confirmation — the explicit
+    /// "Reuse Last" button path (auto-load stays silent).
+    func reuseLastCast() {
+        if loadLastCast() { announceCastLoaded() }
+    }
+
+    /// Show a transient "loaded" confirmation listing the cast, then clear it.
+    private func announceCastLoaded() {
+        let names = cast.map(\.name).joined(separator: ", ")
+        castLoadedNotice = names.isEmpty ? "Last cast loaded." : "Last cast loaded — \(names)"
+        let token = UUID()
+        noticeToken = token
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self, self.noticeToken == token else { return }
+            self.castLoadedNotice = nil
+        }
+    }
+
     /// On the surface's first appear, replace the untouched demo cast with the
     /// user's most recent saved cast (if any). Runs once; never disturbs an
     /// in-progress conversation.
@@ -277,6 +313,37 @@ final class EnsembleViewModel {
         didAttemptAutoLoad = true
         guard turns.isEmpty else { return }
         _ = loadLastCast()
+    }
+
+    // MARK: - Edit cast (post-creation)
+
+    /// Change a speaker's voice live + persist it to the saved cast.
+    func updatePersonaVoice(at index: Int, voiceID: String) {
+        guard cast.indices.contains(index) else { return }
+        cast[index].voiceID = voiceID
+        persistPersonaEdit(at: index)
+    }
+
+    /// Change a speaker's sampling preset live + persist it to the saved cast.
+    func updatePersonaPreset(at index: Int, preset: SamplingPreset) {
+        guard cast.indices.contains(index) else { return }
+        cast[index].samplingPreset = preset
+        persistPersonaEdit(at: index)
+    }
+
+    private func persistPersonaEdit(at index: Int) {
+        guard let ctx = appState.modelContext, let saved = currentSavedCast(ctx) else { return }
+        let personas = saved.sortedPersonas
+        guard personas.indices.contains(index) else { return }
+        personas[index].voiceID = cast[index].voiceID
+        personas[index].samplingPreset = cast[index].samplingPreset
+        EnsembleStore.update(ctx, cast: saved)
+    }
+
+    private func currentSavedCast(_ ctx: ModelContext) -> EnsembleCast? {
+        if let id = currentCastID,
+           let match = EnsembleStore.casts(ctx).first(where: { $0.id == id }) { return match }
+        return EnsembleStore.casts(ctx).first
     }
 
     // MARK: - Run control
@@ -311,14 +378,40 @@ final class EnsembleViewModel {
     func stop() {
         loopTask?.cancel()
         runner.cancel()
+        cancelDictation()
         runState = .idle
         currentSpeakerID = nil
+    }
+
+    /// Cut the loop + the in-flight turn + the player — used by barge-in. Kept
+    /// here so `loopTask`/`runner` stay private to this file.
+    func interruptForBargeIn() {
+        loopTask?.cancel()
+        runner.cancel()
+    }
+
+    /// Resume the cast in the current advance mode (auto keeps rolling; step
+    /// runs one turn then parks). Used after a barge-in turn settles.
+    func resumeCast() {
+        guard canRun else { runState = .idle; return }
+        seedOrderIfNeeded()
+        runLoopTask()
+    }
+
+    /// Tear down any in-progress dictation and reset the mic to idle — so Stop
+    /// (or any hard reset) never leaves the mic capturing into `draft`.
+    func cancelDictation() {
+        dictationController.cancel()
+        dictation = .idle
     }
 
     /// Inject a user turn. The user is a peer: if the loop is running it picks
     /// this up on its next iteration (mention override honored); otherwise we
     /// advance one turn so someone reacts.
     func submitUserTurn() {
+        // After a barge-in (the user cut the cast off), submitting resumes the
+        // cast in the prior advance mode instead of queuing/stepping.
+        if case .userTurn = runState { finishBargeIn(); return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         draft = ""
@@ -416,17 +509,22 @@ final class EnsembleViewModel {
             stripBracketedTags: appState.chatSettings.activeBackend == .pocketTTS,
             onTextDelta: { [weak self] delta in self?.appendToTurn(id: turnID, delta: delta) },
             onSentence: { [weak self] index in
-                guard let self else { return }
-                self.runState = .speaking(speaker: persona.id, sentenceIndex: index)
-                if let i = self.turns.firstIndex(where: { $0.id == turnID }) {
-                    self.turns[i].spokenSentences = index
-                }
+                self?.runState = .speaking(speaker: persona.id, sentenceIndex: index)
+            },
+            onSentencePlayed: { [weak self] index in
+                guard let self, let i = self.turns.firstIndex(where: { $0.id == turnID }) else { return }
+                self.turns[i].spokenSentences = index   // count of sentences fully HEARD
             },
             onError: { [weak self] error in
                 self?.runState = .error(self?.shortError(error) ?? "error")
                 self?.lastTurnFailed = true
             }
         )
+
+        // Interrupted mid-turn (barge-in or Stop): the transcript was already
+        // finalized (truncated, or left partial) — don't clobber it with the
+        // full generated text.
+        if Task.isCancelled { return }
 
         // Clean multi-speaker leakage + a self-prefix, then store the result.
         // Drop the turn if it ends up empty (garbage / no-output / errored).
@@ -470,8 +568,20 @@ final class EnsembleViewModel {
         // Always-on: identity + "only your own single line" (stops the model
         // from scripting the whole table) + no meta. Scene/mood added when set.
         var context = "You are \(persona.name). Respond ONLY as \(persona.name), with a single short line of spoken dialogue. Do NOT write lines for any other character, and do NOT prefix your reply with a name. Remain fully in character; never refer to yourself as an AI, a model, or an assistant."
+        // Introduce the human so the cast treats them as a real participant to
+        // engage — not just another line of scene text. (Their turns arrive
+        // prefixed "<name>:" in the transcript, which a small model can
+        // otherwise mistake for an instruction addressed to itself.)
+        let you = userPeer.name
+        context += " \(you) is a real person in this conversation with you; their lines are prefixed \"\(you):\". When \(you) speaks or asks you something, acknowledge them and answer directly — never ignore them or just talk past them."
         if !scene.isEmpty { context += " The scene: \(scene)." }
-        if !mood.isEmpty { context += " The mood and topic: \(mood). Stay on this topic." }
+        if !mood.isEmpty { context += " The mood and topic: \(mood). Stay roughly on topic, but always respond to \(you) when they speak." }
+        // If the user's line is the most recent, make this turn a direct reply.
+        if turns.last?.speakerID == nil,
+           let said = turns.last?.content.trimmingCharacters(in: .whitespacesAndNewlines),
+           !said.isEmpty {
+            context += " \(you) just said: \"\(said)\". Respond to that directly."
+        }
         return persona.systemPrompt + "\n\n" + context
     }
 

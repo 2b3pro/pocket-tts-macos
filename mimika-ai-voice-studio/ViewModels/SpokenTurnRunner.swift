@@ -89,6 +89,7 @@ final class SpokenTurnRunner {
         stripBracketedTags: Bool,
         onTextDelta: @MainActor @escaping (String) -> Void = { _ in },
         onSentence: @MainActor @escaping (Int) -> Void = { _ in },
+        onSentencePlayed: @MainActor @escaping (Int) -> Void = { _ in },
         onError: @MainActor @escaping (Error) -> Void = { _ in }
     ) async -> Result {
         accText = ""
@@ -153,9 +154,16 @@ final class SpokenTurnRunner {
                     let samples = await self.playCollecting(synth)
                     self.accSamples.append(contentsOf: samples)
                 } else {
-                    do { try await self.player.play(stream: synth) }
-                    catch { /* PlayerError.stopped on interrupt — abandon this turn */ }
+                    do {
+                        try await self.player.play(stream: synth)
+                    } catch {
+                        // PlayerError.stopped on interrupt — this sentence wasn't
+                        // fully heard, so don't mark it played; abandon the turn.
+                        continue
+                    }
                 }
+                // The sentence drained all the way through — the listener heard it.
+                onSentencePlayed(index)
             }
         }
 

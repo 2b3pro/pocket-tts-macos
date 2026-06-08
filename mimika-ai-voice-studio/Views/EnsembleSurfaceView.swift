@@ -17,12 +17,23 @@ struct EnsembleSurfaceView: View {
     let appState: AppState
 
     @State private var showsSetup = false
+    @State private var showsCastEditor = false
+    @State private var viewMode: ViewMode = .transcript
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider().background(Theme.borderColor)
-            transcript
+            if let notice = viewModel.castLoadedNotice {
+                reuseNotice(notice)
+                Divider().background(Theme.borderColor)
+            }
+            if viewMode == .orb {
+                OrbView(amplitudeSource: player.currentAmplitude)
+                    .background(Color.black)
+            } else {
+                transcript
+            }
             Divider().background(Theme.borderColor)
             controls
             composer
@@ -34,6 +45,10 @@ struct EnsembleSurfaceView: View {
         .sheet(isPresented: $showsSetup) {
             EnsembleSetupView(viewModel: viewModel, voices: voices, appState: appState,
                               onDone: { showsSetup = false })
+        }
+        .sheet(isPresented: $showsCastEditor) {
+            EnsembleCastEditorSheet(viewModel: viewModel, voices: voices,
+                                    onClose: { showsCastEditor = false })
         }
     }
 
@@ -49,8 +64,27 @@ struct EnsembleSurfaceView: View {
             Text(statusText)
                 .font(Theme.fontXS)
                 .foregroundStyle(Theme.textSecondary)
+            // View mode (orb / transcript) — mirrors Solo.
+            Button(action: { viewMode = (viewMode == .orb ? .transcript : .orb) }) {
+                Image(systemName: viewMode == .orb ? "list.bullet" : "circle.fill")
+                    .font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+            }
+            .buttonStyle(.plain)
+            .help(viewMode == .orb ? "Show transcript" : "Show orb")
+            .accessibilityIdentifier("ensemble.viewModeToggle")
+
+            if !viewModel.cast.isEmpty {
+                Button(action: { showsCastEditor = true }) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("Edit cast voices & delivery")
+                .accessibilityIdentifier("ensemble.editCast")
+            }
+
             if viewModel.hasSavedCast {
-                Button(action: { viewModel.loadLastCast() }) {
+                Button(action: { viewModel.reuseLastCast() }) {
                     Label("Reuse Last", systemImage: "clock.arrow.circlepath")
                         .font(Theme.fontXS)
                         .foregroundStyle(Theme.accent)
@@ -92,13 +126,16 @@ struct EnsembleSurfaceView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Theme.space3) {
                     if viewModel.turns.isEmpty {
-                        Text("Press Start (or Step) to let the cast talk. You're a peer — type below to jump in anytime.")
-                            .font(Theme.fontSM)
-                            .foregroundStyle(Theme.textSecondary)
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, Theme.space6 * 2)
-                            .padding(.horizontal, Theme.space6)
+                        VStack(spacing: Theme.space4) {
+                            if !viewModel.cast.isEmpty { castRoster }
+                            Text("Press Start (or Step) to let the cast talk. You're a peer — type below to jump in anytime.")
+                                .font(Theme.fontSM)
+                                .foregroundStyle(Theme.textSecondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, Theme.space6 * 2)
+                        .padding(.horizontal, Theme.space6)
                     }
                     ForEach(viewModel.turns) { turn in
                         turnRow(turn).id(turn.id)
@@ -145,6 +182,38 @@ struct EnsembleSurfaceView: View {
         return Theme.speakerColor(at: idx)
     }
 
+    /// The loaded cast as colored name chips — shown in the empty state so a
+    /// freshly generated OR reused cast is visibly confirmed before Start.
+    private var castRoster: some View {
+        VStack(spacing: Theme.space2) {
+            Text("CAST").font(Theme.fontXS).foregroundStyle(Theme.textSecondary)
+            HStack(spacing: Theme.space2) {
+                ForEach(Array(viewModel.cast.enumerated()), id: \.element.id) { idx, persona in
+                    HStack(spacing: 5) {
+                        Circle().fill(Theme.speakerColor(at: idx)).frame(width: 7, height: 7)
+                        Text(persona.name).font(Theme.fontXS).foregroundStyle(Theme.textPrimary)
+                    }
+                    .padding(.horizontal, Theme.space3)
+                    .padding(.vertical, Theme.space1)
+                    .background(Theme.bgSecondary)
+                    .clipShape(Capsule())
+                }
+            }
+        }
+    }
+
+    /// Transient "last cast loaded" confirmation shown after Reuse Last.
+    private func reuseNotice(_ text: String) -> some View {
+        HStack(spacing: Theme.space2) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.successFG)
+            Text(text).font(Theme.fontXS).foregroundStyle(Theme.textPrimary)
+            Spacer()
+        }
+        .padding(.horizontal, Theme.space6)
+        .padding(.vertical, Theme.space2)
+        .background(Theme.bgSecondary)
+    }
+
     // MARK: - Controls
 
     @ViewBuilder
@@ -185,32 +254,94 @@ struct EnsembleSurfaceView: View {
     // MARK: - Composer
 
     private var composer: some View {
-        HStack(spacing: Theme.space3) {
-            TextField("Jump in…", text: $viewModel.draft, axis: .vertical)
-                .lineLimit(1...4)
-                .textFieldStyle(.plain)
-                .font(Theme.fontSM)
-                .foregroundStyle(Theme.textPrimary)
-                .padding(.horizontal, Theme.space4)
-                .padding(.vertical, Theme.space3)
-                .themeInputField()
-                .onSubmit { viewModel.submitUserTurn() }
-                .accessibilityIdentifier("ensemble.composer.field")
-
-            Button(action: { viewModel.submitUserTurn() }) {
-                Text("Send")
-                    .font(Theme.fontSMBold)
-                    .foregroundStyle(.white)
+        VStack(alignment: .leading, spacing: Theme.space1) {
+            if case let .unavailable(msg) = viewModel.dictation {
+                Text(msg).font(Theme.fontXS).foregroundStyle(Theme.warningFG)
+            }
+            HStack(spacing: Theme.space3) {
+                TextField("Jump in…", text: $viewModel.draft, axis: .vertical)
+                    .lineLimit(1...4)
+                    .textFieldStyle(.plain)
+                    .font(Theme.fontSM)
+                    .foregroundStyle(Theme.textPrimary)
                     .padding(.horizontal, Theme.space4)
                     .padding(.vertical, Theme.space3)
-                    .background(Theme.accent)
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.radius))
+                    .themeInputField()
+                    .onSubmit { viewModel.submitUserTurn() }
+                    .accessibilityIdentifier("ensemble.composer.field")
+
+                micButton
+
+                Button(action: { viewModel.submitUserTurn() }) {
+                    Text("Send")
+                        .font(Theme.fontSMBold)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, Theme.space4)
+                        .padding(.vertical, Theme.space3)
+                        .background(Theme.accent)
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.radius))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("ensemble.composer.send")
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("ensemble.composer.send")
         }
         .padding(.horizontal, Theme.space6)
         .padding(.vertical, Theme.space3)
         .background(Theme.bgPrimary)
+    }
+
+    // MARK: - Mic button (barge-in) — mirrors ChatView
+
+    private var micButton: some View {
+        Button(action: { viewModel.micButtonTapped() }) {
+            ZStack {
+                Circle().fill(micButtonBG).frame(width: 36, height: 36)
+                if viewModel.dictation == .listening {
+                    // Pulse ring while listening.
+                    TimelineView(.animation(minimumInterval: 1.0 / 20.0)) { context in
+                        let t = context.date.timeIntervalSinceReferenceDate
+                        let scale = 1.0 + 0.25 * (0.5 + 0.5 * sin(t * 4))
+                        Circle()
+                            .stroke(Theme.errorFG.opacity(0.5), lineWidth: 2)
+                            .frame(width: 36, height: 36)
+                            .scaleEffect(scale)
+                            .opacity(2.0 - scale)
+                    }
+                }
+                Image(systemName: micButtonIcon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+        }
+        .buttonStyle(.plain)
+        .help(micButtonHelp)
+        .accessibilityIdentifier("ensemble.composer.micButton")
+        .accessibilityLabel(micButtonHelp)
+    }
+
+    private var micButtonIcon: String {
+        switch viewModel.dictation {
+        case .idle, .unavailable: return "mic.fill"
+        case .listening:          return "stop.fill"
+        case .ready:              return "paperplane.fill"
+        }
+    }
+
+    private var micButtonBG: Color {
+        switch viewModel.dictation {
+        case .idle:        return Theme.bgTertiary
+        case .listening:   return Theme.errorFG
+        case .ready:       return Theme.accent
+        case .unavailable: return Color.gray.opacity(0.5)
+        }
+    }
+
+    private var micButtonHelp: String {
+        switch viewModel.dictation {
+        case .idle:                 return "Interrupt and speak"
+        case .listening:            return "Stop listening"
+        case .ready:                return "Send your turn"
+        case let .unavailable(msg): return msg
+        }
     }
 }

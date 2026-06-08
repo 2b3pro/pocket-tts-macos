@@ -100,6 +100,36 @@ final class EnsembleLoopTests: XCTestCase {
                        "falls back to the demo cast loaded at init")
     }
 
+    // MARK: - Barge-in
+
+    func test_truncatedSpokenText_keepsPlayedSentencesDropsInFlight() {
+        let s1 = "The first thing I want to say is genuinely important here."
+        let s2 = "The second point follows on quite naturally from that one."
+        let s3 = "And a third sentence that was mid-play when it got cut off."
+        let content = "\(s1) \(s2) \(s3)"
+        // 2 sentences fully played → keep both; the in-flight 3rd is excluded.
+        let kept = EnsembleViewModel.truncatedSpokenText(content: content, playedSentences: 2)
+        XCTAssertNotNil(kept)
+        XCTAssertTrue(kept!.contains("first thing"))
+        XCTAssertTrue(kept!.contains("second point"))
+        XCTAssertFalse(kept!.contains("third"), "the unplayed in-flight sentence is excluded")
+        // 0 played → nothing heard → nil (whole turn dropped).
+        XCTAssertNil(EnsembleViewModel.truncatedSpokenText(content: content, playedSentences: 0))
+    }
+
+    func test_submitUserTurn_inUserTurnState_appendsAndResumes() throws {
+        let vm = try makeVM(pinnedModel: "m", connectedModel: "m")
+        vm.cast = []                    // no cast → resumeCast lands on .idle (no loop spun)
+        vm.runState = .userTurn         // simulate a post-barge-in state
+        vm.draft = "What do you make of that?"
+        vm.submitUserTurn()             // routes to finishBargeIn
+        XCTAssertEqual(vm.turns.count, 1)
+        XCTAssertNil(vm.turns.last?.speakerID, "appended as a user turn")
+        XCTAssertEqual(vm.turns.last?.content, "What do you make of that?")
+        XCTAssertTrue(vm.draft.isEmpty)
+        XCTAssertEqual(vm.runState, .idle, "no cast to resume → idle")
+    }
+
     private func requestBody() throws -> [String: Any] {
         let body = try XCTUnwrap(LLMStubURLProtocol.capturedBody())
         return try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
