@@ -84,7 +84,7 @@ final class EnsembleViewModel {
     // MARK: - Deps
     private let engine: any TTSEngineProtocol
     private let player: StreamingPlayer
-    private let appState: AppState
+    let appState: AppState
     private let session: URLSession
     private let runner: SpokenTurnRunner
 
@@ -307,7 +307,12 @@ final class EnsembleViewModel {
     /// Show a transient "loaded" confirmation listing the cast, then clear it.
     private func announceCastLoaded() {
         let names = cast.map(\.name).joined(separator: ", ")
-        castLoadedNotice = names.isEmpty ? "Last cast loaded." : "Last cast loaded — \(names)"
+        showNotice(names.isEmpty ? "Last cast loaded." : "Last cast loaded — \(names)")
+    }
+
+    /// Show a transient confirmation banner, auto-cleared after a few seconds.
+    func showNotice(_ text: String) {
+        castLoadedNotice = text
         let token = UUID()
         noticeToken = token
         Task { [weak self] in

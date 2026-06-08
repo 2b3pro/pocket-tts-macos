@@ -154,6 +154,22 @@ final class EnsembleLoopTests: XCTestCase {
         XCTAssertTrue(msgs.contains { $0.content.contains("earlier stuff") }, "rolling summary is prepended")
     }
 
+    // MARK: - Export (Phase 6)
+
+    func test_formatMultiTalkScript_tagsByNameSkipsEmpty() {
+        let id = UUID()
+        let turns = [
+            EnsembleTurn(speakerID: id, speakerName: "Fox Mulder", content: "The truth is out there."),
+            EnsembleTurn(speakerID: nil, speakerName: "You", content: "   "),       // empty → skipped
+            EnsembleTurn(speakerID: id, speakerName: "Dana Scully", content: "Show me evidence."),
+        ]
+        let script = EnsembleViewModel.formatMultiTalkScript(turns: turns, stripBrackets: true)
+        XCTAssertTrue(script.contains("{Fox Mulder} The truth is out there."))
+        XCTAssertTrue(script.contains("{Dana Scully} Show me evidence."))
+        XCTAssertFalse(script.contains("{You}"), "the empty user turn is skipped")
+        XCTAssertEqual(script.split(separator: "\n").count, 2)
+    }
+
     private func requestBody() throws -> [String: Any] {
         let body = try XCTUnwrap(LLMStubURLProtocol.capturedBody())
         return try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])

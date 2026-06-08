@@ -30,6 +30,7 @@
 		9A28843F630780EC11A80853 /* RecordingQualityAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B324F0FD7499845E6EDA68A4 /* RecordingQualityAnalyzer.swift */; };
 		A013435DB894EB392B1C4FBA /* EnsembleCastEditorSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C39989818B12E30B025277F9 /* EnsembleCastEditorSheet.swift */; };
 		AB17554B5BACBF301B090DD0 /* EnsembleViewModel+Interruption.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8EAA320219AD219F53EF673 /* EnsembleViewModel+Interruption.swift */; };
+		C5B6AA6C38A3FA3E1AA7A537 /* EnsembleViewModel+Export.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22B75B6336F9B9BD064A2D45 /* EnsembleViewModel+Export.swift */; };
 		D1CE0591FA2E58F9E18ACD95 /* VoiceRecorderViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14BDDD7B827E5800F6747CE2 /* VoiceRecorderViewModel.swift */; };
 		D50B19572FC1302900097B8B /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = D50B19562FC1302900097B8B /* FluidAudio */; };
 		D52D51B52FBA6FD00037F6C4 /* MLXAudioCore in Frameworks */ = {isa = PBXBuildFile; productRef = D52D51B42FBA6FD00037F6C4 /* MLXAudioCore */; };
@@ -229,6 +230,7 @@
 
 /* Begin PBXFileReference section */
 		14BDDD7B827E5800F6747CE2 /* VoiceRecorderViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = VoiceRecorderViewModel.swift; sourceTree = "<group>"; };
+		22B75B6336F9B9BD064A2D45 /* EnsembleViewModel+Export.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = "EnsembleViewModel+Export.swift"; sourceTree = "<group>"; };
 		2BD26F9434166E6F03BF338E /* EnsembleSetupView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EnsembleSetupView.swift; sourceTree = "<group>"; };
 		4455AFA696C04E5F1C41B3BB /* ConductorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConductorTests.swift; sourceTree = "<group>"; };
 		4582C82E02AAE970C6CEBDD5 /* JSONExtractorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = JSONExtractorTests.swift; sourceTree = "<group>"; };
@@ -724,6 +726,7 @@
 				9F063B7FB9F736C210A43433 /* EnsembleViewModel.swift */,
 				E6581221A724E53EAD1AF6FF /* EnsembleViewModel+Context.swift */,
 				D8EAA320219AD219F53EF673 /* EnsembleViewModel+Interruption.swift */,
+				22B75B6336F9B9BD064A2D45 /* EnsembleViewModel+Export.swift */,
 			);
 			path = ViewModels;
 			sourceTree = "<group>";
@@ -1207,6 +1210,7 @@
 				57F3B3F855047E48D0A91CF9 /* EnsembleSetupView.swift in Sources */,
 				AB17554B5BACBF301B090DD0 /* EnsembleViewModel+Interruption.swift in Sources */,
 				A013435DB894EB392B1C4FBA /* EnsembleCastEditorSheet.swift in Sources */,
+				C5B6AA6C38A3FA3E1AA7A537 /* EnsembleViewModel+Export.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

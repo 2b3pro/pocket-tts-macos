@@ -64,6 +64,24 @@ struct EnsembleSurfaceView: View {
             Text(statusText)
                 .font(Theme.fontXS)
                 .foregroundStyle(Theme.textSecondary)
+            if viewModel.canExport {
+                Button(action: { viewModel.saveEpisodeToHistory() }) {
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("Save episode to History")
+                .accessibilityIdentifier("ensemble.saveHistory")
+
+                Button(action: { viewModel.openInMultiTalk() }) {
+                    Image(systemName: "person.2.wave.2")
+                        .font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("Open episode in Multi-Talk")
+                .accessibilityIdentifier("ensemble.openMultiTalk")
+            }
+
             // View mode (orb / transcript) — mirrors Solo.
             Button(action: { viewMode = (viewMode == .orb ? .transcript : .orb) }) {
                 Image(systemName: viewMode == .orb ? "list.bullet" : "circle.fill")
