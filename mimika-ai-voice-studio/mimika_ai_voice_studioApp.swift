@@ -21,7 +21,9 @@ import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        // Stay resident in the menu bar when Read Aloud is on; otherwise the red
+        // close button quits the app (the original single-window behavior).
+        !SettingsStore.load().readAloudEnabled
     }
 }
 
@@ -31,12 +33,18 @@ struct mimika_ai_voice_studioApp: App {
     @State private var appState = AppState()
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "main") {
             ContentView(appState: appState)
                 .preferredColorScheme(.dark)
                 .background(Theme.bgPrimary)
                 .task {
                     await appState.bootstrapIfNeeded()
+                    // Read-Aloud wiring: register the Services provider so the
+                    // system "Read Selection Aloud" service reaches us, and sync
+                    // the login item to the saved preference.
+                    NSApp.servicesProvider = appState.readAloudService
+                    NSUpdateDynamicServices()
+                    LoginItem.setEnabled(appState.chatSettings.launchAtLogin)
                 }
         }
         .windowStyle(.hiddenTitleBar)
@@ -90,6 +98,22 @@ struct mimika_ai_voice_studioApp: App {
                 }
             }
         }
+
+        // Menu-bar item — shown only while Read Aloud is enabled. Voice picker +
+        // Stop + reopen, all driven by the same in-process engine.
+        MenuBarExtra("mimika", systemImage: "mic.fill", isInserted: menuBarVisible) {
+            MenuBarContent(appState: appState)
+        }
+        .menuBarExtraStyle(.menu)
+    }
+
+    /// Binding that inserts/removes the menu-bar item based on the persisted
+    /// Read-Aloud setting (toggled in App Settings).
+    private var menuBarVisible: Binding<Bool> {
+        Binding(
+            get: { appState.chatSettings.readAloudEnabled },
+            set: { appState.chatSettings.readAloudEnabled = $0; SettingsStore.save(appState.chatSettings) }
+        )
     }
 
     /// Dispatch one of the `NSTextFinder.Action` cases to whatever

@@ -138,6 +138,7 @@ struct ContentView: View {
                 onSave: { newSettings in
                     SettingsStore.save(newSettings)
                     chatVM?.settings = newSettings
+                    LoginItem.setEnabled(newSettings.launchAtLogin)
                     Task { await chatVM?.checkConnection() }
                 }
             )
