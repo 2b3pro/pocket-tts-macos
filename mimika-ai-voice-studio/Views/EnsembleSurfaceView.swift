@@ -86,9 +86,15 @@ struct EnsembleSurfaceView: View {
 
     private func turnRow(_ turn: EnsembleTurn) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(turn.speakerName)
-                .font(Theme.fontXS).bold()
-                .foregroundStyle(color(for: turn))
+            HStack(alignment: .firstTextBaseline) {
+                Text(turn.speakerName)
+                    .font(Theme.fontXS).bold()
+                    .foregroundStyle(color(for: turn))
+                Spacer(minLength: Theme.space2)
+                if let preset = turn.samplingPreset {
+                    presetBadge(preset, tint: color(for: turn))
+                }
+            }
             Text(turn.content + (turn.wasCutOff ? "  — [cut off]" : ""))
                 .font(Theme.fontSM)
                 .foregroundStyle(Theme.textPrimary)
@@ -97,6 +103,18 @@ struct EnsembleSurfaceView: View {
         .padding(Theme.space3)
         .background(Theme.bgSecondary)
         .clipShape(RoundedRectangle(cornerRadius: Theme.radius))
+    }
+
+    /// Translucent preset badge in a turn's top-right — the sampling preset the
+    /// speaker had WHEN this turn was generated (a per-turn snapshot, so changing
+    /// a preset mid-conversation shows up as old-vs-new across the transcript).
+    private func presetBadge(_ preset: SamplingPreset, tint: Color) -> some View {
+        Text(preset.displayName)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(tint.opacity(0.85))
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(tint.opacity(0.12))
+            .clipShape(Capsule())
     }
 
     private func color(for turn: EnsembleTurn) -> Color {
