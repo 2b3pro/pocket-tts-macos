@@ -106,7 +106,14 @@ nonisolated enum SamplingPreset: String, CaseIterable, Sendable {
 // their turns the same way it renders any other named speaker.
 
 nonisolated struct UserPeer: Equatable, Sendable {
+    /// Display name — the transcript speaker tag. Defaults to the second-person
+    /// "You" (right for the UI; used by the transcript, export, and history).
     var name: String = "You"
+    /// Model-facing name. MUST NOT be a pronoun: the model treats a speaker label
+    /// as a proper noun, so "You" gets echoed back as address ("Your skepticism",
+    /// "questions You may have"). Defaults to a neutral proper noun and mirrors
+    /// `name` once the user sets a real one.
+    var modelName: String = "Guest"
 }
 
 // MARK: - EnsembleTurn

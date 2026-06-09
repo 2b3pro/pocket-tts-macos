@@ -244,6 +244,31 @@ final class EnsembleLoopTests: XCTestCase {
         XCTAssertEqual(vm.resolvedModel, "dolphin")
     }
 
+    func test_userTurns_useModelNameNotDisplayPronoun_inPOV() throws {
+        // The "You: …" leak: the user's display name reached the model, which
+        // echoed it back as address ("Your skepticism"). The model must see a
+        // non-pronoun proper noun instead; display keeps "You".
+        let vm = try makeVM(pinnedModel: "m", connectedModel: "m")
+        let data = Persona(name: "Data", voiceID: "v", systemPrompt: "")
+        vm.cast = [data]
+        vm.turns = [
+            EnsembleTurn(speakerID: data.id, speakerName: "Data", content: "Curious."),
+            EnsembleTurn(speakerID: nil, speakerName: "You", content: "And I am Odo."),
+        ]
+        let joined = vm.messagesForPersona(data).map(\.content).joined(separator: "\n")
+        XCTAssertFalse(joined.contains("You:"), "the display pronoun must never reach the model")
+        XCTAssertTrue(joined.contains("Guest: And I am Odo."), "user line uses the model-facing name")
+        XCTAssertEqual(vm.turns[1].speakerName, "You", "raw transcript (display/export) is untouched")
+    }
+
+    func test_turnsForModel_isIdentityWhenUserSetARealName() throws {
+        let vm = try makeVM(pinnedModel: "m", connectedModel: "m")
+        vm.userPeer.name = "John"
+        vm.userPeer.modelName = "John"
+        vm.turns = [EnsembleTurn(speakerID: nil, speakerName: "John", content: "Hi.")]
+        XCTAssertEqual(vm.turnsForModel().map(\.speakerName), ["John"])  // a real name passes through
+    }
+
     func test_formatTranscriptMarkdown_realNames_preservesContentAndHeader() throws {
         let vm = try makeVM(pinnedModel: "m", connectedModel: "m")
         let mara = Persona(name: "Mara", voiceID: "v1", systemPrompt: "")
@@ -338,7 +363,7 @@ final class EnsembleLoopTests: XCTestCase {
 
         let body = try requestBody()
         let stop = (body["stop"] as? [String]) ?? []
-        XCTAssertTrue(stop.contains("You:"), "the user should be a stop sequence")
+        XCTAssertTrue(stop.contains("Guest:"), "the user's model-facing name should be a stop sequence (not the 'You' pronoun)")
         XCTAssertTrue(stop.contains("Ada:") || stop.contains("Bertrand:"),
                       "the non-speaking cast member should be a stop sequence")
         XCTAssertEqual(body["max_tokens"] as? Int, 250, "speaker turns should be length-capped")

@@ -23,7 +23,7 @@ extension EnsembleViewModel {
            let mentioned = Conductor.detectMention(in: last.content, cast: cast, excluding: last.speakerID) {
             return mentioned
         }
-        let prompt = DirectorPrompt.build(cast: cast, turns: turns, window: verbatimWindow)
+        let prompt = DirectorPrompt.build(cast: cast, turns: turnsForModel(), window: verbatimWindow)
         do {
             var raw = ""
             let stream = makeClient().streamChat(

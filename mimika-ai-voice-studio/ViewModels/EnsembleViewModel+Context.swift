@@ -89,6 +89,24 @@ extension EnsembleViewModel {
         // can't blow the model's context window.
         let unsummarized = max(verbatimWindow, turns.count - summarizedUpTo)
         let effectiveWindow = min(unsummarized, max(verbatimWindow, Self.maxContextTurns))
-        return Self.renderPOV(turns: turns, for: me, rollingSummary: rollingSummary, window: effectiveWindow)
+        return Self.renderPOV(turns: turnsForModel(), for: me, rollingSummary: rollingSummary, window: effectiveWindow)
+    }
+
+    /// The transcript as the MODEL must see it: the user's display name ("You")
+    /// is swapped for a non-pronoun proper noun (`userPeer.modelName`) so the
+    /// model doesn't read "You" as the addressee's name and echo it back
+    /// capitalized ("Your skepticism"). The raw `turns` — used by the transcript,
+    /// export, and history — keep "You". Identity (no copy) when the two names
+    /// already match, i.e. the user set a real name. Every model-facing path
+    /// (POV, director, rolling summary) renders through this, so "You:" can never
+    /// reach the model by construction.
+    func turnsForModel() -> [EnsembleTurn] {
+        guard userPeer.name != userPeer.modelName else { return turns }
+        return turns.map { turn in
+            guard turn.speakerID == nil else { return turn }
+            var t = turn
+            t.speakerName = userPeer.modelName
+            return t
+        }
     }
 }

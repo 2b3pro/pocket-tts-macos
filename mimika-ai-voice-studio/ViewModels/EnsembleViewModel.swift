@@ -247,6 +247,7 @@ final class EnsembleViewModel {
         self.mood = mood
         let trimmedName = userName.trimmingCharacters(in: .whitespacesAndNewlines)
         userPeer.name = trimmedName.isEmpty ? "You" : trimmedName
+        userPeer.modelName = trimmedName.isEmpty ? "Guest" : trimmedName
         turns = []
         rollingSummary = ""
         summarizedUpTo = 0
@@ -522,7 +523,7 @@ final class EnsembleViewModel {
         guard Self.shouldSummarize(turnCount: turns.count, verbatimWindow: verbatimWindow,
                                    summarizedUpTo: summarizedUpTo, batch: Self.summaryBatchSize) else { return }
         let target = turns.count - verbatimWindow
-        let newTurns = Array(turns[summarizedUpTo..<target])
+        let newTurns = Array(turnsForModel()[summarizedUpTo..<target])
         let prior = rollingSummary
         summaryTask = Task { [weak self] in
             guard let self else { return }
@@ -690,7 +691,7 @@ final class EnsembleViewModel {
         // engage — not just another line of scene text. (Their turns arrive
         // prefixed "<name>:" in the transcript, which a small model can
         // otherwise mistake for an instruction addressed to itself.)
-        let you = userPeer.name
+        let you = userPeer.modelName   // model-facing label — never the "You" pronoun
         context += " \(you) is a real person in this conversation with you; their lines are prefixed \"\(you):\". When \(you) speaks or asks you something, acknowledge them and answer directly — never ignore them or just talk past them."
         if !scene.isEmpty { context += " The scene: \(scene)." }
         if !mood.isEmpty { context += " The mood and topic: \(mood). Stay roughly on topic, but always respond to \(you) when they speak." }
@@ -712,7 +713,7 @@ final class EnsembleViewModel {
     /// so a leading self-prefix is handled by `cleanedTurnText` instead.
     private func stopSequences(for speaker: Persona) -> [String] {
         var names = cast.filter { $0.id != speaker.id }.map { $0.name }
-        names.append(userPeer.name)
+        names.append(userPeer.modelName)
         let stops = names
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
@@ -728,7 +729,7 @@ final class EnsembleViewModel {
         if text.lowercased().hasPrefix(ownPrefix.lowercased()) {
             text = String(text.dropFirst(ownPrefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        let others = cast.filter { $0.id != speaker.id }.map { $0.name } + [userPeer.name]
+        let others = cast.filter { $0.id != speaker.id }.map { $0.name } + [userPeer.modelName]
         var cut = text.endIndex
         for name in others where !name.trimmingCharacters(in: .whitespaces).isEmpty {
             if let range = text.range(of: "\(name):", options: [.caseInsensitive]) {
