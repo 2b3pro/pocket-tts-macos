@@ -619,7 +619,8 @@ final class EnsembleViewModel {
         )
 
         let turnID = UUID()
-        turns.append(EnsembleTurn(id: turnID, speakerID: persona.id, speakerName: persona.name))
+        turns.append(EnsembleTurn(id: turnID, speakerID: persona.id, speakerName: persona.name,
+                                  samplingPreset: persona.samplingPreset))
         currentSpeakerID = persona.id
         runState = .generating(speaker: persona.id)
 

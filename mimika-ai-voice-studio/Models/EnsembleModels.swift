@@ -130,6 +130,11 @@ nonisolated struct EnsembleTurn: Identifiable, Equatable, Sendable {
     var wasCutOff: Bool
     /// How many sentences of `content` were actually spoken before any cut.
     var spokenSentences: Int
+    /// The sampling preset active for the SPEAKER when this turn was generated.
+    /// Captured per-turn (a snapshot, not live) so the transcript shows preset
+    /// history when the user changes a speaker's preset mid-conversation. nil for
+    /// user turns. Ensemble-only — never part of the Multi-Talk export.
+    var samplingPreset: SamplingPreset?
 
     init(
         id: UUID = UUID(),
@@ -137,7 +142,8 @@ nonisolated struct EnsembleTurn: Identifiable, Equatable, Sendable {
         speakerName: String,
         content: String = "",
         wasCutOff: Bool = false,
-        spokenSentences: Int = 0
+        spokenSentences: Int = 0,
+        samplingPreset: SamplingPreset? = nil
     ) {
         self.id = id
         self.speakerID = speakerID
@@ -145,6 +151,7 @@ nonisolated struct EnsembleTurn: Identifiable, Equatable, Sendable {
         self.content = content
         self.wasCutOff = wasCutOff
         self.spokenSentences = spokenSentences
+        self.samplingPreset = samplingPreset
     }
 }
 
