@@ -7,79 +7,204 @@ import SwiftUI
 
 struct ChatView: View {
     @Bindable var viewModel: ChatViewModel
+    @Bindable var ensembleViewModel: EnsembleViewModel
+    @Binding var subMode: ChatSubMode
     let player: StreamingPlayer
+    let voices: [BundledVoice]
+    let appState: AppState
     let onOpenSettings: () -> Void
     var onOpenInMultiTalk: ((PendingReuse) -> Void)?
+
+    @State private var ensembleViewMode: ViewMode = .transcript
+    @State private var showsEnsembleSetup = false
+    @State private var showsEnsembleCastEditor = false
 
     var body: some View {
         VStack(spacing: 0) {
             topBar
             Divider().background(Theme.borderColor)
-            if viewModel.viewMode == .orb {
-                OrbView(amplitudeSource: player.currentAmplitude)
-                    .background(Color.black)
+            if subMode == .solo {
+                if viewModel.viewMode == .orb {
+                    OrbView(amplitudeSource: player.currentAmplitude)
+                        .background(Color.black)
+                } else {
+                    transcript
+                }
+                Divider().background(Theme.borderColor)
+                composer
             } else {
-                transcript
+                EnsembleSurfaceView(viewModel: ensembleViewModel, player: player, viewMode: ensembleViewMode)
             }
-            Divider().background(Theme.borderColor)
-            composer
         }
         .onAppear { viewModel.startHealthChecks() }
+        .sheet(isPresented: $showsEnsembleSetup) {
+            EnsembleSetupView(viewModel: ensembleViewModel, voices: voices, appState: appState,
+                              onDone: { showsEnsembleSetup = false })
+        }
+        .sheet(isPresented: $showsEnsembleCastEditor) {
+            EnsembleCastEditorSheet(viewModel: ensembleViewModel, voices: voices,
+                                    onClose: { showsEnsembleCastEditor = false })
+        }
     }
 
     // MARK: - Top bar
 
     private var topBar: some View {
-        HStack {
-            ConnectionStatusPill(state: viewModel.connectionState)
+        HStack(spacing: Theme.space3) {
+            Picker("", selection: $subMode) {
+                Text("Solo").tag(ChatSubMode.solo)
+                Text("Ensemble").tag(ChatSubMode.ensemble)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .accessibilityIdentifier("chat.subModeToggle")
+
+            ConnectionStatusPill(state: subMode == .solo ? viewModel.connectionState : ensembleViewModel.connectionState)
+
             Spacer()
-            Button(action: { viewModel.saveTranscript() }) {
-                Image(systemName: "square.and.arrow.down")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Theme.textSecondary)
-            }
-            .buttonStyle(.plain)
-            .disabled(!viewModel.canSaveTranscript)
-            .help("Save transcript")
 
-            Button(action: { onOpenInMultiTalk?(viewModel.multiTalkPayload()) }) {
-                Image(systemName: "person.2.wave.2")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Theme.textSecondary)
-            }
-            .buttonStyle(.plain)
-            .disabled(!viewModel.canSaveTranscript)
-            .help("Open in Multi-Talk")
+            if subMode == .solo {
+                Button(action: { viewModel.saveTranscript() }) {
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(!viewModel.canSaveTranscript)
+                .help("Save transcript")
 
-            Button(action: { viewModel.toggleViewMode() }) {
-                Image(systemName: viewModel.viewMode == .orb ? "list.bullet" : "circle.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Theme.textSecondary)
-            }
-            .buttonStyle(.plain)
-            .help(viewModel.viewMode == .orb ? "Show transcript" : "Show orb")
-            .accessibilityIdentifier("chat.viewModeToggle")
+                Button(action: { onOpenInMultiTalk?(viewModel.multiTalkPayload()) }) {
+                    Image(systemName: "person.2.wave.2")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(!viewModel.canSaveTranscript)
+                .help("Open in Multi-Talk")
 
-            Button(action: { Task { await viewModel.checkConnection() } }) {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Theme.textSecondary)
-            }
-            .buttonStyle(.plain)
-            .help("Refresh connection")
+                Button(action: { viewModel.toggleViewMode() }) {
+                    Image(systemName: viewModel.viewMode == .orb ? "list.bullet" : "circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .help(viewModel.viewMode == .orb ? "Show transcript" : "Show orb")
+                .accessibilityIdentifier("chat.viewModeToggle")
 
-            Button(action: onOpenSettings) {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Theme.textSecondary)
+                Button(action: { Task { await viewModel.checkConnection() } }) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("Refresh connection")
+
+                // Settings now uses the same sliders icon as Ensemble's cast
+                // editor — each mode's "configure the voices" control matches.
+                Button(action: onOpenSettings) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("Settings")
+                .accessibilityIdentifier("settings.openButton")
+            } else {
+                ensembleControls
             }
-            .buttonStyle(.plain)
-            .help("Settings")
-            .accessibilityIdentifier("settings.openButton")
+            // No global gear in Ensemble — the cast editor (sliders) is its
+            // settings; app settings stay reachable via ⌘,.
         }
         .padding(.horizontal, Theme.space6)
         .padding(.vertical, Theme.space3)
         .background(Theme.bgPrimary)
+    }
+
+    // MARK: - Ensemble controls (hosted in the shared top bar)
+
+    @ViewBuilder
+    private var ensembleControls: some View {
+        if let color = ensembleSpeakerColor {
+            Circle().fill(color).frame(width: 8, height: 8)
+        }
+        Text(ensembleStatusText)
+            .font(Theme.fontXS).foregroundStyle(Theme.textSecondary)
+
+        if ensembleViewModel.canExport {
+            // Same icon/action as Solo's top bar: export the transcript as .md.
+            Button(action: { ensembleViewModel.saveTranscript() }) {
+                Image(systemName: "square.and.arrow.down")
+                    .font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+            }
+            .buttonStyle(.plain).help("Export transcript (.md)")
+            .accessibilityIdentifier("ensemble.saveTranscript")
+
+            Button(action: { ensembleViewModel.saveEpisodeToHistory() }) {
+                Image(systemName: "tray.and.arrow.down")
+                    .font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+            }
+            .buttonStyle(.plain).help("Save episode to History")
+            .accessibilityIdentifier("ensemble.saveHistory")
+
+            Button(action: { ensembleViewModel.openInMultiTalk() }) {
+                Image(systemName: "person.2.wave.2")
+                    .font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+            }
+            .buttonStyle(.plain).help("Open episode in Multi-Talk")
+            .accessibilityIdentifier("ensemble.openMultiTalk")
+        }
+
+        Button(action: { ensembleViewMode = (ensembleViewMode == .orb ? .transcript : .orb) }) {
+            Image(systemName: ensembleViewMode == .orb ? "list.bullet" : "circle.fill")
+                .font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+        }
+        .buttonStyle(.plain).help(ensembleViewMode == .orb ? "Show transcript" : "Show orb")
+        .accessibilityIdentifier("ensemble.viewModeToggle")
+
+        if !ensembleViewModel.cast.isEmpty {
+            Button(action: { showsEnsembleCastEditor = true }) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 13)).foregroundStyle(Theme.textSecondary)
+            }
+            .buttonStyle(.plain).help("Edit cast voices & delivery")
+            .accessibilityIdentifier("ensemble.editCast")
+        }
+
+        if ensembleViewModel.hasSavedCast {
+            Button(action: { ensembleViewModel.reuseLastCast() }) {
+                Label("Reuse Last", systemImage: "clock.arrow.circlepath")
+                    .font(Theme.fontXS).foregroundStyle(Theme.accent)
+            }
+            .buttonStyle(.plain)
+            .help("Reload your most recent cast — same speakers, scene, and voices")
+            .accessibilityIdentifier("ensemble.reuseLast")
+        }
+
+        Button(action: { showsEnsembleSetup = true }) {
+            Label("New Cast", systemImage: "person.3.sequence.fill")
+                .font(Theme.fontXS).foregroundStyle(Theme.accent)
+        }
+        .buttonStyle(.plain).help("Generate a new cast with the persona-writer")
+        .accessibilityIdentifier("ensemble.newCast")
+    }
+
+    private var ensembleStatusText: String {
+        switch ensembleViewModel.runState {
+        case .idle:         return "Idle"
+        case .picking:      return "Choosing next speaker…"
+        case .generating:   return "\(ensembleViewModel.currentSpeakerName ?? "Someone") is thinking…"
+        case .speaking:     return "\(ensembleViewModel.currentSpeakerName ?? "Someone") is talking…"
+        case .awaitingStep: return "Paused — Step or Resume"
+        case .userTurn:     return "Your turn…"
+        case let .error(m): return "Error: \(m)"
+        }
+    }
+
+    private var ensembleSpeakerColor: Color? {
+        guard let id = ensembleViewModel.currentSpeakerID,
+              let idx = ensembleViewModel.cast.firstIndex(where: { $0.id == id }) else { return nil }
+        return Theme.speakerColor(at: idx)
     }
 
     // MARK: - Transcript

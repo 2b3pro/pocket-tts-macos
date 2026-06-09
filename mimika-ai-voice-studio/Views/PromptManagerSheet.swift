@@ -253,6 +253,7 @@ struct PromptManagerSheet: View {
         case .singleVoice: return ChatSettings.defaultSingleVoicePrompt
         case .multiTalk:   return ChatSettings.defaultMultiTalkPrompt
         case .chat:        return ""
+        case .ensemble:    return PersonaWriterPrompts.expansionSystemDefault
         }
     }
 }

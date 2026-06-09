@@ -24,7 +24,13 @@ enum HistoryStore {
         // Purely additive — SwiftData handles this without an explicit
         // VersionedSchema since no existing entity types or fields change.
         LocalLLMEndpoint.self,
-        SystemPrompt.self
+        SystemPrompt.self,
+        // Ensemble Mode — additive (see EnsembleDataModels.swift). Same
+        // no-VersionedSchema reasoning: new entity types only.
+        EnsembleCast.self,
+        EnsemblePersona.self,
+        EnsembleSession.self,
+        EnsembleSessionSpeaker.self
     ])
 
     /// Production container (on-disk in the sandbox's app-support dir).

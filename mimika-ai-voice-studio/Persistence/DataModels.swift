@@ -106,12 +106,17 @@ enum PromptScope: String, Codable, CaseIterable, Sendable {
     case singleVoice
     case multiTalk
     case chat
+    /// The Ensemble Mode persona-writer's editable *expansion* prompt
+    /// (the per-character system-prompt template). The skeleton-pass
+    /// prompt is a hardcoded constant, not user-editable.
+    case ensemble
 
     var displayName: String {
         switch self {
         case .singleVoice: return "Single Voice"
         case .multiTalk:   return "Multi-Talk"
         case .chat:        return "Chat"
+        case .ensemble:    return "Ensemble Writer"
         }
     }
 }
