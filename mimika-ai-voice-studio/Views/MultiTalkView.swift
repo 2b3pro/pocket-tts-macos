@@ -155,28 +155,27 @@ struct MultiTalkView: View {
             }
         }
         .onChange(of: viewModel.speakers) { oldSpeakers, newSpeakers in
-            // Keep existing `{Tag}` references in the script body in
-            // sync when the user mutates a speaker card. Two cases —
-            // both must be covered so the rename works regardless of
-            // which tag mode is active:
+            // Keep existing `{Tag}` references in the script body in sync when the
+            // user mutates a speaker card — but ONLY rewrite the tag form that's
+            // actually in the script for the current mode:
             //
-            //   * Card NAME changed → rewrite `{oldName}` → `{newName}`
-            //     (covers speaker-label mode where tags use card names)
-            //   * Card VOICE changed → rewrite `{oldVoiceName}` →
-            //     `{newVoiceName}` (covers voice-names mode where tags
-            //     use the resolved voice display name)
+            //   * speaker-label mode → tags are card names; a NAME change rewrites
+            //     `{oldName}` → `{newName}`. A voice change must NOT touch them.
+            //   * voice-names mode → tags are voice display names; a VOICE change
+            //     rewrites `{oldVoiceName}` → `{newVoiceName}`. A name change must
+            //     NOT touch them.
             //
-            // The rename function is a no-op when no matching tags
-            // exist, so we can safely fire both branches in either
-            // mode — the inactive form just doesn't find anything to
-            // rewrite.
+            // Firing the wrong branch is not a harmless no-op: if a voice name
+            // collides with another speaker's label (e.g. the user shares a cast
+            // voice), the rename clobbers the wrong lines.
+            let mode = appState.multiTalkTagDisplayMode
             let oldByID = Dictionary(uniqueKeysWithValues: oldSpeakers.map { ($0.id, $0) })
             for new in newSpeakers {
                 guard let old = oldByID[new.id] else { continue }
-                if old.name != new.name {
+                if mode == .speakerLabel, old.name != new.name {
                     viewModel.renameSpeakerTags(from: old.name, to: new.name)
                 }
-                if old.voiceID != new.voiceID,
+                if mode == .voiceName, old.voiceID != new.voiceID,
                    let oldVN = viewModel.voiceNameResolver?(old.voiceID),
                    let newVN = viewModel.voiceNameResolver?(new.voiceID),
                    oldVN != newVN

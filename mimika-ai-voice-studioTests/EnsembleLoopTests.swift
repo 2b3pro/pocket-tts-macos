@@ -269,6 +269,22 @@ final class EnsembleLoopTests: XCTestCase {
         XCTAssertEqual(vm.turnsForModel().map(\.speakerName), ["John"])  // a real name passes through
     }
 
+    func test_exportLabels_userGetsVoiceDistinctFromCast() throws {
+        let vm = try makeVM(pinnedModel: "m", connectedModel: "m")
+        let fox = Persona(name: "Fox Mulder", voiceID: "javert", systemPrompt: "")
+        let data = Persona(name: "Commander Data", voiceID: "jean", systemPrompt: "")
+        vm.cast = [fox, data]
+        vm.turns = [
+            EnsembleTurn(speakerID: fox.id, speakerName: "Fox Mulder", content: "The truth is out there."),
+            EnsembleTurn(speakerID: nil, speakerName: "You", content: "Hello."),
+        ]
+        let refs = vm.exportLabels().speakers
+        let userRef = refs.first { $0.name == "You" }
+        XCTAssertNotNil(userRef, "the user is a distinct export speaker")
+        XCTAssertFalse(["javert", "jean"].contains(userRef!.voiceID),
+                       "the user's export voice must be distinct from every cast voice (no shared-voice tag collision)")
+    }
+
     func test_formatTranscriptMarkdown_realNames_preservesContentAndHeader() throws {
         let vm = try makeVM(pinnedModel: "m", connectedModel: "m")
         let mara = Persona(name: "Mara", voiceID: "v1", systemPrompt: "")

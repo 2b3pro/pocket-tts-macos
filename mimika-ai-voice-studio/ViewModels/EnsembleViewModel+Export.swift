@@ -73,7 +73,15 @@ extension EnsembleViewModel {
         var userLabel = "You"
         if turns.contains(where: { $0.speakerID == nil }) {
             userLabel = unique(userPeer.name)
-            refs.append(SpeakerRef(name: userLabel, voiceID: cast.first?.voiceID ?? "cosette"))
+            // The user needs their OWN voice in the re-voiced export, not a cast
+            // member's. Sharing a voiceID makes the user's voice NAME equal that
+            // cast member's speaker label, which corrupts Multi-Talk's tag rewrite
+            // (changing one relabels the other). Pick the first stock voice the
+            // cast isn't already using.
+            let castVoiceIDs = Set(cast.map(\.voiceID))
+            let userVoice = BundledVoice.stockIDs.sorted().first { !castVoiceIDs.contains($0) }
+                ?? cast.first?.voiceID ?? "cosette"
+            refs.append(SpeakerRef(name: userLabel, voiceID: userVoice))
         }
         let label: (UUID?) -> String = { id in
             if let id, let tag = idToLabel[id] { return tag }
