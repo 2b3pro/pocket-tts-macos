@@ -24,11 +24,11 @@
    </BuildAction>
    <TestAction
       buildConfiguration = "Debug"
-      disablePerformanceAntipatternChecker = "YES"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES"
-      shouldAutocreateTestPlan = "YES">
+      shouldAutocreateTestPlan = "YES"
+      disablePerformanceAntipatternChecker = "YES">
       <Testables>
          <TestableReference
             skipped = "NO">

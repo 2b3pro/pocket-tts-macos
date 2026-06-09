@@ -16,7 +16,7 @@ The original Pocket TTS ships as an Electron app wrapping a Python backend (Fast
 
 ### Pocket-TTS (100M, Core ML)
 
-The Python TTS model was converted to three Core ML `.mlpackage` artifacts via a separate [conversion project](https://github.com/slaughters85j/pocket-tts-core-ml-conversion):
+The Python TTS model was converted to three Core ML `.mlpackage` artifacts via a separate conversion project:
 
 | Model | Size | Role |
 |-------|-----:|------|
@@ -98,10 +98,12 @@ Both Single Voice and Multi-Talk views have an "AI Write" button that opens an L
 - **Single Voice** — text editor, voice picker, synthesize, inline audio player
 - **Multi-Talk** — multi-speaker scripts with `{Speaker}` tags and `[Xs]` pause markers
 - **Chat** — LM Studio integration with streaming TTS, dictation, transcript export, orb visualizer
+- **Ensemble** — a Chat sub-mode where you and multiple AI personas hold one shared, autonomous, *voiced* conversation. Cast written by a local LLM or by Claude (native structured outputs); turn-taking via Director (AI-picked), round-robin, or weighted-random with first-name mention addressing; per-speaker sampling presets shown as live per-turn badges; an agreement-collapse "grenade" to break a stale consensus; rolling-summary context window; mic barge-in; export to Multi-Talk / History / Markdown.
 - **Voice Changer** — drop an audio/video file, transcribe via Parakeet TDT v3 through FluidAudio, re-voice with any installed voice while preserving the original timeline (silence + pause structure)
 - **Speaker Isolation** — drop a multi-speaker audio/video file, diarize via SpeakerKit (Argmax's on-device pyannote), get per-speaker isolated tracks + a Background pseudo-row. Per-speaker actions: Use Original / Discard / Re-voice. Closed-loop video output via AVFoundation re-mux.
   - **Audio Preservation** (optional, opt-in) — when enabled, an on-device HTDemucs Core ML model separates the input into vocals + drums + bass + other stems. Re-voiced speakers ride on top of the preserved music stem, so background audio survives the re-voice. Model is a 287 MB user-downloaded `.mlpackage`; soft-falls back to v1 (music goes silent under revoiced speech) when not installed, with a banner pointing at the Manage Separation Models sheet.
 - **History** — SwiftData-backed log with "Reuse Setup"
+- **Menu Bar & Read Aloud** (optional, opt-in) — a menu-bar voice picker plus a system-wide "Read Selection Aloud" macOS Service: select text in any app, then right-click → Services or hit a keyboard shortcut, and Mimika reads it aloud on-device with its warm engine. Resident menu bar with optional launch-at-login; no separate app, server, or Python.
 - **Text Normalizer** — numbers, currency, units, abbreviations, domain terms, acronyms (~1000 lines)
 - **Metal Orb** — raymarched volumetric plasma driven by real-time audio amplitude
 
@@ -152,9 +154,7 @@ No pre-archive strip step. On first launch the user sees a download sheet coveri
 
 | Item | Status |
 |------|--------|
-| LavaSR audio quality tuning | In progress — slight artifacts in enhanced output |
 | ULUNAS denoiser port | Planned — currently BWE only |
-| Sparkle auto-update + DMG | Planned (signing + notarization done) |
 | iOS variant | Deferred to v2 |
 
 ## Related Projects
@@ -162,8 +162,6 @@ No pre-archive strip step. On first launch the user sees a download sheet coveri
 | Project | Role |
 |---------|------|
 | [pocket-tts](https://github.com/slaughters85j/pocket-tts) | Original Python/Electron app — reference implementation |
-| [pocket-tts-core-ml-conversion](https://github.com/slaughters85j/pocket-tts-core-ml-conversion) | Core ML conversion scripts, validators, Swift CLI harness for the Pocket-TTS models |
-| [pocket-tts-demucs-coreml-conversion](https://github.com/slaughters85j/pocket-tts-demucs-coreml-conversion) | PyTorch → Core ML conversion + numerical-parity validators for the Phase 7 HTDemucs source-separation model. Published artifact lives at [`slaughters85j/htdemucs-coreml`](https://huggingface.co/slaughters85j/htdemucs-coreml) on Hugging Face (MIT, FP32, 287 MB zipped). |
 | [mlx-audio-swift (fork)](https://github.com/slaughters85j/mlx-audio-swift) | Forked to expose Fish S2 Pro codec + refCodes API |
 
 ## Authors
