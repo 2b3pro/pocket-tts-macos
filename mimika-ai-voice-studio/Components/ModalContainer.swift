@@ -2,58 +2,83 @@
 //  ModalContainer.swift
 //  mimika-ai-voice-studio
 //
-//  Generic centered sheet wrapper with backdrop blur, header bar, and
-//  escape/click-outside dismiss. Mirrors Electron's Modal.tsx layout.
+//  Sheet content wrapper: a header bar (title + close) over the content.
+//
+//  Two layout modes:
+//    * Overlay (default) — the original full-app look: a dimming scrim behind a
+//      centered, inset, rounded, shadowed card. Designed for layering over a
+//      page (mirrors Electron's Modal.tsx).
+//    * fillsSheet — sheet-native: when presented via SwiftUI `.sheet` (which
+//      already provides a floating, rounded window), the scrim + inset + shadow
+//      become a redundant black frame around the card. This mode drops them and
+//      fills the sheet edge-to-edge.
 
 import SwiftUI
 
 struct ModalContainer<Content: View>: View {
     let title: String
     let onClose: () -> Void
+    /// When true, fill the host `.sheet` instead of drawing an inset, dimmed,
+    /// centered card (the sheet supplies the window chrome).
+    var fillsSheet: Bool = false
     @ViewBuilder var content: Content
 
     var body: some View {
-        ZStack {
-            // Backdrop
-            Color.black.opacity(0.6)
-                .ignoresSafeArea()
-                .onTapGesture { onClose() }
+        Group {
+            if fillsSheet {
+                card
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .background(Theme.bgSecondary)
+            } else {
+                ZStack {
+                    // Backdrop
+                    Color.black.opacity(0.6)
+                        .ignoresSafeArea()
+                        .onTapGesture { onClose() }
 
-            VStack(spacing: 0) {
-                // Header
-                HStack {
-                    Text(title)
-                        .font(Theme.fontLG)
-                        .foregroundStyle(Theme.textPrimary)
-                    Spacer()
-                    Button(action: onClose) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(Theme.textSecondary)
-                            .frame(width: 28, height: 28)
-                    }
-                    .buttonStyle(.plain)
+                    card
+                        .frame(maxWidth: 480)
+                        .background(Theme.bgSecondary)
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.radiusLarge))
+                        .shadow(color: .black.opacity(0.5), radius: 32, x: 0, y: 8)
+                        .padding(.horizontal, Theme.space4)
                 }
-                .padding(.horizontal, Theme.space6)
-                .padding(.vertical, Theme.space4)
-                .overlay(alignment: .bottom) {
-                    Rectangle()
-                        .fill(Theme.borderColor)
-                        .frame(height: 1)
-                }
-
-                // Content
-                content
-                    .padding(.horizontal, Theme.space6)
-                    .padding(.vertical, Theme.space4)
             }
-            .frame(maxWidth: 480)
-            .background(Theme.bgSecondary)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.radiusLarge))
-            .shadow(color: .black.opacity(0.5), radius: 32, x: 0, y: 8)
-            .padding(.horizontal, Theme.space4)
         }
         .background(KeyDismissCatcher(onEscape: onClose))
+    }
+
+    /// Header bar + content, with no outer framing/background — each mode wraps
+    /// this differently.
+    private var card: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text(title)
+                    .font(Theme.fontLG)
+                    .foregroundStyle(Theme.textPrimary)
+                Spacer()
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Theme.textSecondary)
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, Theme.space6)
+            .padding(.vertical, Theme.space4)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(Theme.borderColor)
+                    .frame(height: 1)
+            }
+
+            // Content
+            content
+                .padding(.horizontal, Theme.space6)
+                .padding(.vertical, Theme.space4)
+        }
     }
 }
 

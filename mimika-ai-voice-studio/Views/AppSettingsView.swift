@@ -38,6 +38,9 @@ struct AppSettingsView: View {
     @State private var availableModels: [String] = []
     @State private var modelLoadError: String? = nil
     @State private var probeState: ProbeState = .idle
+    @State private var personaConfig = PersonaProviderStore.load()
+    @State private var anthropicKey = PersonaProviderStore.anthropicAPIKey()
+    @State private var anthropicProbe: ProbeState = .idle
 
     init(
         isPresented: Binding<Bool>,
@@ -67,7 +70,11 @@ struct AppSettingsView: View {
             VStack(alignment: .leading, spacing: Theme.space4) {
                 lmStudioSection
                 Divider().background(Theme.borderColor)
+                personaWriterSection
+                Divider().background(Theme.borderColor)
                 pocketTTSTuningSection
+                Divider().background(Theme.borderColor)
+                readAloudSection
                 Divider().background(Theme.borderColor)
                 actions
             }
@@ -148,6 +155,95 @@ struct AppSettingsView: View {
         }
     }
 
+    private var personaWriterSection: some View {
+        VStack(alignment: .leading, spacing: Theme.space3) {
+            Text("Ensemble Persona Writer").font(Theme.fontSMBold).foregroundStyle(Theme.textPrimary)
+            Text("Who writes the cast when you create an Ensemble. Local uses the endpoint above; Claude uses the Anthropic API with structured outputs for more reliable, on-spec casts. Synthesis always stays on-device.")
+                .font(Theme.fontXS)
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Text("Provider").font(Theme.fontXS).foregroundStyle(Theme.textSecondary).frame(width: 90, alignment: .leading)
+                Picker("", selection: $personaConfig.kind) {
+                    ForEach(PersonaProviderKind.allCases, id: \.self) { Text($0.displayName).tag($0) }
+                }
+                .pickerStyle(.menu).labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("appSettings.personaProvider")
+            }
+
+            if personaConfig.kind == .anthropic {
+                HStack {
+                    Text("API Key").font(Theme.fontXS).foregroundStyle(Theme.textSecondary).frame(width: 90, alignment: .leading)
+                    SecureField("sk-ant-…", text: $anthropicKey)
+                        .textFieldStyle(.plain)
+                        .padding(.horizontal, Theme.space3).padding(.vertical, Theme.space2)
+                        .themeInputField()
+                        .accessibilityIdentifier("appSettings.anthropicKey")
+                    anthropicProbeDot
+                }
+                .task(id: anthropicKey + "|" + personaConfig.anthropicModel) {
+                    await probeAnthropicKey()
+                }
+                HStack {
+                    Text("Model").font(Theme.fontXS).foregroundStyle(Theme.textSecondary).frame(width: 90, alignment: .leading)
+                    Picker("", selection: $personaConfig.anthropicModel) {
+                        ForEach(PersonaProviderStore.anthropicModels, id: \.self) { Text($0).tag($0) }
+                    }
+                    .pickerStyle(.menu).labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("appSettings.anthropicModel")
+                }
+                Text("Stored in your Keychain — get a key at console.anthropic.com. Haiku is fastest/cheapest; Opus is most capable.")
+                    .font(Theme.fontXS)
+                    .foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var anthropicProbeDot: some View {
+        switch anthropicProbe {
+        case .idle:
+            EmptyView()
+        case .probing:
+            ProgressView().controlSize(.mini)
+        case .ok:
+            HStack(spacing: Theme.space1) {
+                Circle().fill(Theme.successFG).frame(width: 8, height: 8)
+                Text("valid").font(Theme.fontXS).foregroundStyle(Theme.successFG)
+            }
+            .help("API key valid")
+            .accessibilityIdentifier("appSettings.anthropicKeyOK")
+        case let .fail(reason):
+            HStack(spacing: Theme.space1) {
+                Circle().fill(Theme.errorFG).frame(width: 8, height: 8)
+                Text(reason).font(Theme.fontXS).foregroundStyle(Theme.errorFG)
+            }
+        }
+    }
+
+    /// Validate the entered Anthropic key against /v1/models (debounced). The
+    /// key isn't saved until Done — this probes the in-field value live.
+    private func probeAnthropicKey() async {
+        guard personaConfig.kind == .anthropic else { anthropicProbe = .idle; return }
+        let key = anthropicKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { anthropicProbe = .idle; return }
+        anthropicProbe = .probing
+        try? await Task.sleep(for: .milliseconds(600))   // debounce typing
+        if Task.isCancelled { return }
+        do {
+            let models = try await AnthropicMessagesClient(apiKey: key).listModels()
+            if !models.isEmpty, !models.contains(personaConfig.anthropicModel) {
+                anthropicProbe = .fail("model unavailable")
+            } else {
+                anthropicProbe = .ok("valid")
+            }
+        } catch {
+            anthropicProbe = .fail("invalid key")
+        }
+    }
+
     private var pocketTTSTuningSection: some View {
         VStack(alignment: .leading, spacing: Theme.space3) {
             Text("Synthesis Tuning")
@@ -188,6 +284,52 @@ struct AppSettingsView: View {
                 .help("Reset chunk budget to Python reference default (50)")
             }
         }
+    }
+
+    private var readAloudSection: some View {
+        VStack(alignment: .leading, spacing: Theme.space3) {
+            Text("Read Aloud & Menu Bar")
+                .font(Theme.fontSMBold)
+                .foregroundStyle(Theme.textPrimary)
+            Text("Adds a menu-bar voice picker and a system “Read Selection Aloud” service. Select text in any app, then right-click → Services — or assign a shortcut in System Settings → Keyboard Shortcuts → Services. Reads aloud with mimika’s on-device engine.")
+                .font(Theme.fontXS)
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Toggle("Enable Read Aloud + menu bar", isOn: $workingCopy.readAloudEnabled)
+                .font(Theme.fontSM)
+                .foregroundStyle(Theme.textPrimary)
+                .accessibilityIdentifier("appSettings.readAloudEnabled")
+
+            if workingCopy.readAloudEnabled {
+                HStack {
+                    Text("Voice").font(Theme.fontXS).foregroundStyle(Theme.textSecondary).frame(width: 90, alignment: .leading)
+                    Picker("", selection: $workingCopy.readAloudVoiceID) {
+                        ForEach(readAloudVoiceOptions, id: \.id) { opt in
+                            Text(opt.name).tag(opt.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("appSettings.readAloudVoice")
+                }
+                Toggle("Keep mimika in the menu bar at login", isOn: $workingCopy.launchAtLogin)
+                    .font(Theme.fontSM)
+                    .foregroundStyle(Theme.textPrimary)
+            }
+        }
+    }
+
+    /// Stock + imported Pocket-TTS voices for the read-aloud picker (mirrors the
+    /// menu-bar list).
+    private var readAloudVoiceOptions: [(id: String, name: String)] {
+        let stock = BundledVoice.stockIDs.sorted().map {
+            (id: $0, name: BundledVoice(predefined: $0).name)
+        }
+        let imported = VoiceManager.shared.voices
+            .filter { $0.pocketTTSKVPath != nil }
+            .map { (id: "imported:\($0.id)", name: $0.isEnhanced ? "✨ \($0.name)" : $0.name) }
+        return stock + imported
     }
 
     private var actions: some View {
@@ -232,6 +374,9 @@ struct AppSettingsView: View {
         // Remaining fields (model, etc.) still live in ChatSettings.
         settings = workingCopy
         onSave(workingCopy)
+        // Persona-writer provider config (UserDefaults) + API key (Keychain).
+        PersonaProviderStore.save(personaConfig)
+        PersonaProviderStore.setAnthropicAPIKey(anthropicKey)
         isPresented = false
     }
 
@@ -245,7 +390,10 @@ struct AppSettingsView: View {
         do {
             let list = try await client.listModels()
             availableModels = list
-            if workingCopy.model.isEmpty, let first = list.first {
+            // Re-select the loaded model when the saved one isn't served (e.g. the
+            // user swapped the loaded model in LM Studio) — keeps this picker, the
+            // Connected pill, and the live requests all in agreement.
+            if (workingCopy.model.isEmpty || !list.contains(workingCopy.model)), let first = list.first {
                 workingCopy.model = first
             }
         } catch {

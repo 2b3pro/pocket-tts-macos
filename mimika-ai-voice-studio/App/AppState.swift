@@ -62,6 +62,10 @@ final class AppState {
     /// so it's reachable from any tab.
     var showsAppSettings: Bool = false
 
+    /// First-time Read-Aloud onboarding sheet (how to use the service + set the
+    /// keyboard shortcut), shown right after the user enables the feature.
+    var showsReadAloudOnboarding: Bool = false
+
     /// Chat-scoped settings sheet visibility (TTS voice for chat replies,
     /// chat system prompt). Triggered by the gear icon inside the Chat
     /// tab's own header — those settings only make sense in chat context.
@@ -136,6 +140,14 @@ final class AppState {
     private static let multiTalkTagDisplayModeKey = "com.slaughtersj.pocket-tts-macos.multiTalkTagDisplayMode"
     private static let multiTalkUseSpeakerColorsKey = "com.slaughtersj.pocket-tts-macos.multiTalkUseSpeakerColors"
 
+    // MARK: Chat sub-mode (Solo / Ensemble)
+    /// Whether the Chat tab shows the 1:1 Solo conversation or the multi-agent
+    /// Ensemble sub-mode. Persisted so the user's choice survives launches.
+    var chatSubMode: ChatSubMode = .solo {
+        didSet { UserDefaults.standard.set(chatSubMode.rawValue, forKey: Self.chatSubModeKey) }
+    }
+    private static let chatSubModeKey = "com.slaughtersj.pocket-tts-macos.chatSubMode"
+
     /// SwiftData context for the app-wide models (LocalLLMEndpoint,
     /// SystemPrompt, history). Set by `ContentView.onAppear` once the
     /// `@Environment(\.modelContext)` is in scope. View models that
@@ -179,6 +191,12 @@ final class AppState {
     private(set) var player: StreamingPlayer?
     private(set) var fishEngine: FishEngine?
 
+    /// Read-Aloud feature (menu bar + macOS Service): the shared speak/stop
+    /// controller and the Services provider object. Lazily built so they only
+    /// come into being once the feature is actually used.
+    @ObservationIgnored private(set) lazy var readAloud = ReadAloudController(appState: self)
+    @ObservationIgnored private(set) lazy var readAloudService = ReadAloudService(appState: self)
+
     /// The currently active TTS engine, dispatched by backend selection.
     var activeEngine: any TTSEngineProtocol {
         switch chatSettings.activeBackend {
@@ -195,6 +213,9 @@ final class AppState {
         let savedTagMode = UserDefaults.standard.string(forKey: Self.multiTalkTagDisplayModeKey)
         self.multiTalkTagDisplayMode = SpeakerTagMode(rawValue: savedTagMode ?? "") ?? .speakerLabel
         self.multiTalkUseSpeakerColors = UserDefaults.standard.bool(forKey: Self.multiTalkUseSpeakerColorsKey)
+
+        let savedSubMode = UserDefaults.standard.string(forKey: Self.chatSubModeKey)
+        self.chatSubMode = ChatSubMode(rawValue: savedSubMode ?? "") ?? .solo
     }
 
     /// Build the Pocket-TTS engine + player once at app launch.

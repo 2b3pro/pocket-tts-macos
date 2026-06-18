@@ -1,0 +1,154 @@
+//
+//  PersonaWriterTests.swift
+//  mimika-ai-voice-studioTests
+//
+//  Persona-writer request path: the happy path, retry-on-error, reasoning-channel
+//  recovery (gpt-oss), tolerant contract decoding, and voice resolution. The LLM
+//  is stubbed via LLMStubURLProtocol (FIFO queue for the retry sequence).
+//
+
+import XCTest
+@testable import mimika_ai_voice_studio
+
+@MainActor
+final class PersonaWriterTests: XCTestCase {
+
+    override func setUp() {
+        super.setUp()
+        LLMStubURLProtocol.reset()
+    }
+
+    private func stubClient() -> LocalLLMClient {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [LLMStubURLProtocol.self]
+        return LocalLLMClient(baseURL: URL(string: "http://localhost:1234")!, session: URLSession(configuration: config))
+    }
+
+    /// Wrap raw JSON the model "said" as a streaming SSE response (the writer
+    /// now uses the streaming endpoint, same shape as Solo Chat).
+    private func completion(_ said: String) -> Data {
+        let escaped = said
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"\(escaped)\"}}]}\n\n"
+        return Data((chunk + "data: [DONE]\n\n").utf8)
+    }
+
+    /// A REASONING-channel SSE response: `content` never appears and the model's
+    /// answer streams via `delta.reasoning` (gpt-oss via LM Studio). The writer
+    /// opts into reasoning capture, so the JSON is still recovered.
+    private func reasoningCompletion(_ said: String) -> Data {
+        let escaped = said
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let chunk = "data: {\"choices\":[{\"delta\":{\"reasoning\":\"\(escaped)\"}}]}\n\n"
+        return Data((chunk + "data: [DONE]\n\n").utf8)
+    }
+
+    func test_requestJSON_succeedsOnFirstTry() async throws {
+        LLMStubURLProtocol.setResponse(completion(#"{"scene":"s","mood":"m","cast":[]}"#))
+        let skeleton = try await PersonaWriter.requestJSON(
+            CastSkeleton.self, client: stubClient(),
+            model: "m", system: "sys", user: "usr", temperature: 0.3
+        )
+        XCTAssertEqual(skeleton.scene, "s")
+        XCTAssertEqual(LLMStubURLProtocol.requestCount, 1)
+    }
+
+    func test_requestJSON_recoversJSONFromReasoningChannel() async throws {
+        // gpt-oss/LM Studio: the whole answer (incl. the JSON) lands in the
+        // reasoning channel with `content` empty. The writer must still recover
+        // it — and without spending a retry.
+        LLMStubURLProtocol.setResponse(reasoningCompletion(#"{"scene":"s","mood":"m","cast":[]}"#))
+        let skeleton = try await PersonaWriter.requestJSON(
+            CastSkeleton.self, client: stubClient(),
+            model: "m", system: "sys", user: "usr", temperature: 0.3
+        )
+        XCTAssertEqual(skeleton.scene, "s")
+        XCTAssertEqual(LLMStubURLProtocol.requestCount, 1, "reasoning fallback must not trigger a retry")
+    }
+
+    func test_requestJSON_retriesAsTextWhenFirstAttemptRejected() async throws {
+        // Attempt 1 errors (e.g. 400 / timeout); the writer retries the same
+        // streaming request and the second attempt returns 200 OK.
+        LLMStubURLProtocol.enqueue(Data("response_format unsupported".utf8), statusCode: 400)
+        LLMStubURLProtocol.enqueue(completion(#"{"name":"Ada","voice":"dry","temperature":0.6,"persona_prompt":"hi","reads_on_others":{}}"#))
+
+        let full = try await PersonaWriter.requestJSON(
+            PersonaFull.self, client: stubClient(),
+            model: "m", system: "sys", user: "usr", temperature: 0.4
+        )
+        XCTAssertEqual(full.name, "Ada")
+        XCTAssertEqual(full.personaPrompt, "hi")
+        XCTAssertEqual(LLMStubURLProtocol.requestCount, 2, "should have retried exactly once")
+    }
+
+    func test_personaFull_decodesTolerantlyWithMissingFields() throws {
+        let full = try JSONExtractor.decode(PersonaFull.self, from: #"{"name":"Q","voice":"smug","persona_prompt":"hi"}"#)
+        XCTAssertEqual(full.name, "Q")
+        XCTAssertEqual(full.temperature, 0.7, accuracy: 0.0001)
+        XCTAssertTrue(full.readsOnOthers.isEmpty)
+    }
+
+    func test_voiceResolver_exactThenFuzzyThenNil() {
+        let library = [
+            VoiceOption(id: "javert", name: "Javert"),
+            VoiceOption(id: "cosette", name: "Cosette"),
+            VoiceOption(id: "imported:abc", name: "My Custom Voice"),
+        ]
+        XCTAssertEqual(VoiceResolver.resolve(suggested: "javert", library: library), "javert")
+        XCTAssertEqual(VoiceResolver.resolve(suggested: "a cosette-like maid", library: library), "cosette")
+        XCTAssertEqual(VoiceResolver.resolve(suggested: "My Custom Voice", library: library), "imported:abc")
+        XCTAssertNil(VoiceResolver.resolve(suggested: "Morgan Freeman", library: library))
+    }
+
+    func test_requestJSON_throwsFriendlyErrorAfterExhaustingRetries() async throws {
+        // Every attempt returns an unrepairable dangling-key fragment.
+        for _ in 0..<3 { LLMStubURLProtocol.enqueue(completion("{\"name\":")) }
+        do {
+            _ = try await PersonaWriter.requestJSON(
+                PersonaFull.self, client: stubClient(),
+                model: "m", system: "s", user: "u", temperature: 0.3
+            )
+            XCTFail("expected to throw after exhausting retries")
+        } catch let error as PersonaWriterError {
+            if case .invalidJSON = error {} else { XCTFail("unexpected PersonaWriterError: \(error)") }
+        }
+        XCTAssertEqual(LLMStubURLProtocol.requestCount, 3, "should try exactly `attempts` times")
+    }
+
+    // MARK: - Name reconciliation
+
+    func test_reconcileNames_userNamesWinOverModelDuplicates() {
+        // The real bug: the user typed distinct names but the model returned two
+        // identical ones ("Data" came back as a second "William Riker").
+        let skel = CastSkeleton(scene: "s", mood: "m", cast: [
+            PersonaStub(name: "Commander William Riker"),
+            PersonaStub(name: "Commander William Riker"),
+        ])
+        let result = PersonaWriter.reconcileNames(skel, provided: ["Commander Riker", "Commander Data"])
+        XCTAssertEqual(result.cast.map(\.name), ["Commander Riker", "Commander Data"],
+                       "the user's distinct names override the model's duplicate")
+    }
+
+    func test_reconcileNames_pinsTypedNamesAndRemapsReads() {
+        let skel = CastSkeleton(scene: "s", mood: "m", cast: [
+            PersonaStub(name: "Jean-Luc Picard", readsOnOthers: ["Will Riker": "trusts him"]),
+            PersonaStub(name: "Will Riker", readsOnOthers: ["Jean-Luc Picard": "respects the captain"]),
+        ])
+        let result = PersonaWriter.reconcileNames(skel, provided: ["Picard", "Riker"])
+        XCTAssertEqual(result.cast.map(\.name), ["Picard", "Riker"], "names pinned to user input")
+        // Relationship-graph keys follow the rename.
+        XCTAssertEqual(result.cast[0].readsOnOthers["Riker"], "trusts him")
+        XCTAssertEqual(result.cast[1].readsOnOthers["Picard"], "respects the captain")
+    }
+
+    func test_reconcileNames_dedupesBlankInventedCollisions() {
+        // Two blank slots that both happened to invent "Bob".
+        let skel = CastSkeleton(scene: "s", mood: "m", cast: [
+            PersonaStub(name: "Bob"), PersonaStub(name: "Bob"),
+        ])
+        let result = PersonaWriter.reconcileNames(skel, provided: ["", ""])
+        XCTAssertEqual(result.cast.map(\.name), ["Bob", "Bob 2"])
+    }
+}

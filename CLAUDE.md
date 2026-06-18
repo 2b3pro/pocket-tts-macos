@@ -84,11 +84,15 @@ mimika-ai-voice-studio/
 │   ├── ContentView.swift             (NavigationSplitView; routes .needsModelDownload → FirstLaunchSetupView)
 │   ├── road-map.md
 │   ├── App/
-│   │   ├── AppState.swift            (global app state + engine ownership + .needsModelDownload gate)
-│   │   └── SynthesisStatus.swift
+│   │   ├── AppState.swift            (global app state + engine ownership + .needsModelDownload gate + chatSubMode + readAloud)
+│   │   ├── SynthesisStatus.swift
+│   │   ├── ReadAloudController.swift (@MainActor @Observable; reuses the warm engine+player to speak text aloud)
+│   │   ├── ReadAloudService.swift    (NSServices provider for "Read Selection Aloud")
+│   │   └── LoginItem.swift           (SMAppService wrapper for the optional launch-at-login menu-bar resident)
 │   ├── Models/
 │   │   ├── BundledVoice.swift        (stock voice catalog entry)
-│   │   └── ChatModels.swift
+│   │   ├── ChatModels.swift          (ChatSettings: model, readAloudEnabled/VoiceID, launchAtLogin)
+│   │   └── EnsembleModels.swift      (runtime value types: Persona, SamplingPreset, EnsembleTurn, RunState, ChatSubMode)
 │   ├── Engine/
 │   │   ├── TTS/
 │   │   │   ├── TTSEngine.swift           (Core ML synthesis orchestrator)
@@ -163,13 +167,20 @@ mimika-ai-voice-studio/
 │   │   └── AACEncoder.swift          (AVAssetWriter)
 │   ├── Persistence/
 │   │   ├── DataModels.swift          (SwiftData @Model types)
+│   │   ├── EnsembleDataModels.swift  (Ensemble @Models: EnsembleCast, EnsemblePersona, EnsembleSession[Speaker])
 │   │   ├── AppDataStore.swift
+│   │   ├── EnsembleStore.swift       (CRUD for casts/personas/sessions; mirrors HistoryStore)
 │   │   └── HistoryStore.swift
 │   ├── ViewModels/
 │   │   ├── SingleVoiceViewModel.swift
 │   │   ├── MultiTalkViewModel.swift
 │   │   ├── ChatViewModel.swift
 │   │   ├── ChatViewModel+Dictation.swift
+│   │   ├── EnsembleViewModel.swift            (@MainActor; owns the turn loop + transcript + cast)
+│   │   ├── EnsembleViewModel+Context.swift    (per-speaker POV transcript rendering + rolling summary window)
+│   │   ├── EnsembleViewModel+Director.swift   (director turn mode + agreement-collapse "grenade")
+│   │   ├── EnsembleViewModel+Interruption.swift (barge-in: mic cuts the cast off mid-turn)
+│   │   ├── EnsembleViewModel+Export.swift     (render episode → Multi-Talk script → open/save to History)
 │   │   ├── HistoryViewModel.swift
 │   │   ├── VoiceChangerViewModel.swift
 │   │   ├── SpeakerIsolatorViewModel.swift         (state + DI; pipeline orchestration in extensions)
@@ -182,8 +193,15 @@ mimika-ai-voice-studio/
 │   │   ├── SingleVoiceView.swift
 │   │   ├── MultiTalkView.swift
 │   │   ├── HistoryView.swift
-│   │   ├── ChatView.swift
+│   │   ├── ChatView.swift             (hosts Solo/Ensemble sub-modes in one top bar)
 │   │   ├── ChatSettingsView.swift
+│   │   ├── EnsembleSurfaceView.swift  (Ensemble transcript + run controls; per-turn preset badges)
+│   │   ├── EnsembleSetupView.swift    (new-cast wizard: count → names → scene+mood → writer → confirm voices)
+│   │   ├── EnsembleCastEditorSheet.swift   (post-creation: change voices/presets; live + persisted)
+│   │   ├── EnsembleSettingsView.swift (run knobs: turn order, randomness, pace, limits, context)
+│   │   ├── EnsemblePersonaEditorSheet.swift (review/rewrite a generated persona at the confirm step)
+│   │   ├── MenuBarContent.swift       (MenuBarExtra: read-aloud voice picker + Stop + reopen)
+│   │   ├── ReadAloudOnboardingView.swift (one-time sheet: shortcut-setup deep-link to System Settings)
 │   │   ├── AppSettingsView.swift
 │   │   ├── VoiceChangerSheet.swift
 │   │   ├── VoiceManagerView.swift
@@ -220,6 +238,13 @@ mimika-ai-voice-studio/
 │   │   └── Theme.swift
 │   ├── Networking/
 │   │   ├── LocalLLMClient.swift      (OpenAI-compatible local endpoint)
+│   │   ├── AnthropicMessagesClient.swift (native Claude /v1/messages; structured-outputs JSON)
+│   │   ├── Conductor.swift           (pure, nonisolated turn-taking: mention override + round-robin/weighted)
+│   │   ├── DirectorPrompt.swift      (builds the "who speaks next?" director request)
+│   │   ├── PersonaWriter.swift       (@MainActor @Observable; skeleton-first cast generation)
+│   │   ├── PersonaWriterProvider.swift (pluggable backend: local OpenAI-compat vs native Claude)
+│   │   ├── PersonaContracts.swift    (persona-writer DTOs + tolerant decoding + prompt templates)
+│   │   ├── JSONExtractor.swift       (tolerant JSON salvage from free-form/streamed model output)
 │   │   ├── ScriptGenerator.swift
 │   │   └── SentenceDetector.swift
 │   └── Assets.xcassets/
@@ -357,3 +382,41 @@ The App Store binary drops from ~500 MB to ~50 MB; the tradeoff is the user need
 - `BundledMLModelManager` reuses `DemucsZipExtractor` (general-purpose despite the name) and `BackoffPolicy` (1/4/15 s production retries). Verify + unzip + compile each get their own error case in `BundledMLModelManagerError` so a failure banner can surface what specifically went wrong.
 
 Implementation file paths are now reflected in the Project Layout section above.
+
+---
+
+## Ensemble Mode — live, multi-speaker, multi-LLM voiced conversations
+
+Ensemble Mode is the **Ensemble sub-mode of the Chat tab** (`AppState.chatSubMode`: `.solo` | `.ensemble`, persisted). A cast of AI personas plus the human user hold ONE shared, autonomous, fully-voiced conversation: an LLM "conductor" picks who speaks next, each turn runs through the same `LLM → SentenceDetector → TTS → player` pipeline Solo Chat uses, and the user can barge in at any time. A finished episode exports to a `{Name}`-tagged Multi-Talk script (reusing that tab's render/export — no new audio code) or saves to History.
+
+**Two distinct model layers (keep them straight):**
+
+- **Runtime value types** (`Models/EnsembleModels.swift`) — `Persona`, `EnsembleTurn`, `SamplingPreset`, `UserPeer`, `RunState`, `AdvanceMode`, `RNGMode`, `ChatSubMode`. All `nonisolated`/`Sendable` (BundledVoice / PCMFrame house style) so the pure `Conductor` and `@Sendable` turn closures can pass them around without crossing the MainActor boundary. These are the in-memory shapes the loop reads.
+- **SwiftData `@Model` types** (`Persistence/EnsembleDataModels.swift`) — `EnsembleCast`, `EnsemblePersona`, `EnsembleSession`, `EnsembleSessionSpeaker`. Storage only; additive (no existing entity changes) so they migrate without a `VersionedSchema`, and all live in the single `HistoryStore.schema`. A saved `EnsemblePersona` is mapped to a runtime `Persona` when a cast loads. CRUD goes through `EnsembleStore` (static, `@MainActor`, mirrors `HistoryStore`, caps unpinned sessions at 30).
+
+**Locked implementation shape (do not regress):**
+
+- **Loop ownership:** a single `@MainActor` `loopTask` on `EnsembleViewModel` owns the run. Each turn is awaited fully (the conversation is a dependency chain — turn N+1 needs N), so the loop never picks a new speaker mid-turn. All transcript state lives on the main actor.
+- **POV rendering is the core mechanism** (`EnsembleViewModel+Context.renderPOV`, pure static + unit-tested): each persona sees its OWN lines as `assistant` and everyone else — other personas AND the user — as name-prefixed `user` people, never as AIs. Consecutive non-me lines are coalesced into one `user` message because several local chat templates (Gemma, Mistral) require strict user/assistant alternation. The model only ever sees a window (rolling summary + last N verbatim turns); the full transcript stays app-side as the source of truth.
+- **Conductor** (`Networking/Conductor.swift`, pure + nonisolated) selects in priority order: (1) **mention override** — a direct address of another cast member by name goes next, honored by every mode — UNLESS it would extend an A↔B mutual-mention ping-pong in a cast of 3+ (then defer so a quiet third voice speaks); (2) mode base selection: `roundRobin`, `weightedRandom` (excludes the immediate last speaker), or `director`. Director mode does one LLM call per turn (`EnsembleViewModel+Director` + `DirectorPrompt`); on ANY failure it falls back to weighted-random so a slow/bad director never stalls the loop. Default turn order is **Director (AI-picked)**. `[Conductor]` diagnostics are intentionally un-gated (DEBUG is Release-only).
+- **SamplingPreset is the single source of LLM sampling per speaker** — Strict / Relaxed / Spirited / Butterfly Chaser map to real temperature/top-p/top-k. `Persona.temperature` is retained for persistence back-compat only and no longer drives sampling. The preset is captured **per-turn** on `EnsembleTurn.samplingPreset` (a snapshot, not live) so the transcript shows preset history when the user changes a speaker's preset mid-conversation — surfaced as the **per-turn preset badge** in `EnsembleSurfaceView`. Ensemble-only; never part of the Multi-Talk export.
+- **Persona writer** (`PersonaWriter` + `PersonaWriterProvider` + `PersonaContracts`) generates the cast **skeleton-first**: one call returns the cast skeleton + relationship graph (cast names render immediately), then each persona is expanded in its own call (fills in progressively; avoids one fragile giant JSON blob on local models). Two pluggable providers via `PersonaProviderStore` (**local is the default** so the app stays offline unless the user opts in): `LocalPersonaWriterProvider` (OpenAI-compatible; `response_format` deliberately OFF — it breaks gpt-oss; tolerant streaming + reasoning-channel fallback + `JSONExtractor`) and `AnthropicPersonaWriterProvider` (native Claude structured outputs, the reliability win). The writer/conductor model is configured ONCE in App Settings, not per-cast (one source of truth — `EnsembleSettingsView` has no model picker).
+- **Barge-in** (`EnsembleViewModel+Interruption`) drives the same 3-state dictation cycle as Solo Chat (idle → listening → ready → submit), but START also cuts the cast off: stops the loop + in-flight turn + player and drops the half-spoken sentence (`EnsembleTurn.wasCutOff` / `spokenSentences` → renders a "[cut off]" marker so the cast can react). A denied mic still cuts the cast off — the user just types the turn instead.
+- **The user is modeled as a peer (`UserPeer`), not the hub** — their turns render like any other named speaker. CRITICAL: the model-facing `modelName` MUST NOT be a pronoun ("You" gets echoed back as address, e.g. "Your skepticism"); it defaults to the neutral proper noun "Guest" and mirrors the display `name` once the user sets a real one.
+- **Export** (`EnsembleViewModel+Export`): tags are disambiguated per speaker so duplicate/blank names don't collapse into one voice; an episode that's empty after stage-direction stripping can't be saved. Stage directions are stripped per the active backend.
+
+---
+
+## Menu Bar + Read-Aloud (native — replaces the old Python/Electron service)
+
+A native macOS menu-bar presence + system-wide "Read Selection Aloud" Service, reusing the app's already-warm engine + player so a read-aloud has **no extra model-load cost**. Replaces the previous Python/Electron read-aloud service — main app stays Swift-only.
+
+**Locked implementation shape (do not regress):**
+
+- **`ReadAloudController`** (`@MainActor @Observable`) is the single "speak this text aloud" brain shared by the menu-bar item and the Service. It mirrors `SingleVoiceViewModel`'s synth loop (minus history/preview), tees the engine stream into the player, applies `VoiceLevel` gain, and cancels any in-flight read first. Guards on `engineStatus == .ready` and surfaces a toast if the models are still loading.
+- **`ReadAloudService`** is the `NSServices` provider. The Service is declared **statically** in `Info.plist`'s `NSServices` array (`NSMessage` = `readSelectionAloud`, matching the `@objc` method), so macOS registers it. Do **NOT** call `NSUpdateDynamicServices()` at launch — it kicks a full Services rescan (pbs) on the main thread and can stall launch. Wiring (`NSApp.servicesProvider = appState.readAloudService`) lives in a `.task` deliberately OFF the engine-load path. The service no-ops with a helpful error string unless `readAloudEnabled` is on.
+- **`MenuBarExtra`** is shown only while Read Aloud is enabled — its `isInserted` binds to `menuBarVisible`, whose **setter is intentionally a NO-OP**. SwiftUI echoes the binding back through `set` during scene reconciliation (including a `false` echo on teardown); a writing setter would clobber `readAloudEnabled` on disk (the icon would never stick). The setting is owned SOLELY by App Settings — the menu bar only reads it. `MenuBarContent` offers the read-aloud voice picker (stock + imported Pocket-TTS voices), Stop, and reopen/quit.
+- **App stays resident in the menu bar when Read Aloud is on:** `AppDelegate.applicationShouldTerminateAfterLastWindowClosed` returns `!readAloudEnabled` — closing the last window quits only when Read Aloud is off (original single-window behavior).
+- **`LoginItem`** wraps `SMAppService.mainApp` for the optional launch-at-login resident (`ChatSettings.launchAtLogin`); touched only when the user opted in (the status check is a possibly-slow XPC round-trip). Best-effort — registration failure on an unsigned/dev build is logged, not surfaced.
+- **`ReadAloudOnboardingView`** shows once after the user enables Read Aloud, deep-linking to System Settings → Keyboard → Shortcuts → Services (the keyboard-shortcut binding is something only the user can do there).
+- **History `ModelContainer` is built ONCE** in `mimika_ai_voice_studioApp.init()` and reused — it used to be a computed property that rebuilt a fresh container per scene re-evaluation; a second `ModelContainer` on the same on-disk store DEADLOCKS on the first's SQLite lock (the launch hang the menu-bar scene exposed). Falls back to an in-memory container if schema setup fails.

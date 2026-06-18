@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var multiVM: MultiTalkViewModel?
     @State private var historyVM = HistoryViewModel()
     @State private var chatVM: ChatViewModel?
+    @State private var ensembleVM: EnsembleViewModel?
     @State private var voiceChangerVM: VoiceChangerViewModel?
     @State private var speakerIsolatorVM: SpeakerIsolatorViewModel?
 
@@ -137,9 +138,23 @@ struct ContentView: View {
                 onSave: { newSettings in
                     SettingsStore.save(newSettings)
                     chatVM?.settings = newSettings
+                    LoginItem.setEnabled(newSettings.launchAtLogin)
                     Task { await chatVM?.checkConnection() }
                 }
             )
+        }
+        // Read-Aloud onboarding — shown once right after the feature is enabled.
+        .sheet(isPresented: $appState.showsReadAloudOnboarding) {
+            ReadAloudOnboardingView(onClose: { appState.showsReadAloudOnboarding = false })
+        }
+        .onChange(of: appState.chatSettings.readAloudEnabled) { wasEnabled, isEnabled in
+            // Surface the setup guide when Read Aloud is turned ON. Delay so the
+            // App Settings sheet finishes dismissing before this one presents.
+            guard isEnabled, !wasEnabled else { return }
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(450))
+                appState.showsReadAloudOnboarding = true
+            }
         }
         // Chat-scoped settings (TTS voice + chat system prompt). Reachable
         // only from the Chat tab's own gear button.
@@ -412,7 +427,7 @@ struct ContentView: View {
 
     @ViewBuilder
     private var readyView: some View {
-        if let singleVM, let multiVM, let chatVM {
+        if let singleVM, let multiVM, let chatVM, let ensembleVM {
             switch appState.selectedTab {
             case .single:
                 SingleVoiceView(
@@ -440,7 +455,11 @@ struct ContentView: View {
             case .chat:
                 ChatView(
                     viewModel: chatVM,
+                    ensembleViewModel: ensembleVM,
+                    subMode: $appState.chatSubMode,
                     player: appState.player!,
+                    voices: voices,
+                    appState: appState,
                     onOpenSettings: { appState.showsChatSettings = true },
                     onOpenInMultiTalk: { payload in appState.queueReuse(payload) }
                 )
@@ -483,6 +502,7 @@ struct ContentView: View {
                 .chat:        chatBody,
                 .singleVoice: singleBody,
                 .multiTalk:   multiBody,
+                .ensemble:    PersonaWriterPrompts.expansionSystemDefault,
             ]
         )
     }
@@ -619,6 +639,11 @@ struct ContentView: View {
         }
         if chatVM == nil {
             chatVM = ChatViewModel(engine: engine, player: player, settings: appState.chatSettings, appState: appState)
+        }
+        if ensembleVM == nil {
+            // Depends on the protocol-typed active engine (Phase 4 backend-decision):
+            // Phase 1 is text-only so the engine is unused until Phase 3 wires synth.
+            ensembleVM = EnsembleViewModel(engine: appState.activeEngine, player: player, appState: appState)
         }
         // BundledVoice catalog: discovered by VoiceLoader at engine init; map IDs → BundledVoice.
         let ids = engine.availableVoiceIDs()
