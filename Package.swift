@@ -40,6 +40,7 @@ let package = Package(
             path: ".",
             sources: [
                 "headless/main.swift",
+                "headless/BuildInfo.swift", // --- Build/version stamp (deploy-daemon.sh) ---
                 "headless/Server.swift",   // --- Streaming HTTP daemon (P3, MLX-free) ---
                 // --- Core ML synthesis path (P1, MLX-free) ---
                 "mimika-ai-voice-studio/Engine/TTS/TTSEngine.swift",

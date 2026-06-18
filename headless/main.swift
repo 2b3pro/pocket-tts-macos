@@ -39,9 +39,16 @@ usage:
   pockettts bake --wav <ref.wav> --out <voice_kv.safetensors> [--resources <dir>]
                  [--rms-db <target>]   # conditioning RMS baked into the clone (default -16)
   pockettts serve [--port <int>] [--resources <dir>]   # persistent streaming HTTP daemon (default :8891)
+  pockettts --version                                  # print build provenance (git SHA / branch / build time)
 """
 
 let sub = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""
+
+// --version / version: print build provenance and exit before any engine work.
+if sub == "--version" || sub == "version" || CommandLine.arguments.contains("--version") {
+    print(BuildInfo.summary)
+    exit(0)
+}
 
 // --resources must be applied BEFORE the engine reads ModelPaths.overrideResourcesDir
 // (a lazy `let` captured on first access).
@@ -155,6 +162,7 @@ nonisolated func normalizeRMS(_ samples: [Float], targetDB: Float) -> [Float] {
 func runServe() async {
     let port = UInt16(argValue("--port") ?? "") ?? 8891
     do {
+        note("[pockettts] \(BuildInfo.summary)")
         let tInit = Date()
         let engine = try await TTSEngine()
         note(String(format: "[pockettts] engine init: %.0f ms", Date().timeIntervalSince(tInit) * 1000))

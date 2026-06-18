@@ -145,7 +145,7 @@ nonisolated final class PocketDaemon: Sendable {
     // MARK: Routes
 
     private func handleHealth(_ conn: NWConnection) async throws {
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "status": "ready",
             "engine": "coreml-pocket",
             "pid": ProcessInfo.processInfo.processIdentifier,
@@ -153,6 +153,14 @@ nonisolated final class PocketDaemon: Sendable {
             "generations_served": await gate.served,
             "sample_rate": kSampleRate,
         ]
+        // Build provenance — lets a client compare the running daemon against
+        // source HEAD (see scripts/check-daemon-version.sh). Built inline from
+        // Sendable scalar statics (a [String: Any] property can't cross actors).
+        body["version"] = BuildInfo.version
+        body["git_sha"] = BuildInfo.gitSHA
+        body["branch"] = BuildInfo.branch
+        body["dirty"] = BuildInfo.dirty
+        body["built_at"] = BuildInfo.builtAt
         try await writeJSON(conn, body)
     }
 

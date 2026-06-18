@@ -174,6 +174,10 @@ buffered −21.8 dBFS at target −20.
 - Persistent streaming daemon. See "Daemon (P3) — HTTP contract" above. The full
   synth knob set + `targetRmsDb` are per-request JSON fields, not CLI flags.
 
+`--version` — print build provenance and exit: `pockettts <tag> (<sha>[-dirty] · <branch> · built <iso8601>)`.
+- A bare `swift build` reports `dev (unknown-dirty · unknown · built dev)`. Only a
+  build through `scripts/deploy-daemon.sh` carries a real git SHA (see Versioning below).
+
 ## Loudness model
 
 Two levers. **Bake-time** `--rms-db` sets the conditioning level baked into the
@@ -189,6 +193,32 @@ field → daemon. Verified end-to-end at −20.00 dBFS.
 
 Internal constants not yet exposed: bake 15s reference cap, EOS smoothing
 (`eosLogitThreshold -4.0`, 3 consecutive frames).
+
+## Versioning & deploy
+
+The binary stamps its own provenance so we can answer "is the latest running?"
+without guessing from file mtimes.
+
+- **`headless/BuildInfo.swift`** — committed with placeholder defaults (a bare
+  `swift build` ⇒ `dev / unknown`). `scripts/deploy-daemon.sh` rewrites it with the
+  real git SHA / branch / dirty flag / ISO timestamp just before a **release**
+  build, then restores it from a backup copy (so the working tree stays clean).
+- **`pockettts --version`** prints the one-line stamp; **`GET /health`** returns
+  `version`, `git_sha`, `branch`, `dirty`, `built_at` alongside the runtime fields.
+- **`scripts/deploy-daemon.sh [tag] [--restart]`** — stamp → `swift build -c release`
+  (into `/tmp` scratch to dodge the dual-mount ModuleCache collision) → atomic
+  install (`temp + mv`, so replacing a *running* binary never hits "Text file busy")
+  into `~/Library/Application Support/pai/pocket-coreml-bin/`. Without `--restart`
+  the live process keeps running on its old inode until restarted; `--restart`
+  posts `/shutdown` and relies on the supervisor (VoiceServer/`start.sh`) to respawn.
+  Override the target with `POCKETTTS_BIN_DIR=` (used for dry runs).
+- **`scripts/check-daemon-version.sh [port]`** — curls `/health`, compares `git_sha`
+  to `git rev-parse --short HEAD`; prints `✓ current` (exit 0) / `✗ STALE` (exit 1) /
+  not reachable (exit 2). This supersedes the old mtime-based "refresh when newer"
+  heuristic — `start.sh` can keep copying, but provenance is now verifiable.
+
+> A daemon built before this landed reports no version fields on `/health`; treat a
+> missing `git_sha` as "stale, pre-versioning — redeploy."
 
 ## PAI integration (P4 / P4d)
 
