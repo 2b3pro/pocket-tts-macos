@@ -22,6 +22,20 @@ Kyutai itself as a low-frequency, lagging signal.
 > public `pocket_tts` package are on disk, so most of John's weight work is
 > reproducible (see "Can we reproduce John's weight work?" below).
 >
+> **Update (2026-06-18):** upstream has since landed **48 more commits** on
+> `mimika-ai-voice-studio/main` (through v1.5.4) — but they are **entirely GUI/feature
+> work**: Ensemble Mode (multi-speaker, multi-LLM voiced conversations), the native
+> Menu Bar + Read-Aloud quick action, and release prep. **None of it is linked by the
+> headless daemon.** Exactly one commit in that gap touches a daemon source: `30b648a`
+> (misleadingly titled "Ensemble: pin user-typed cast names") adds **year
+> normalization** to `TextNormalizer.swift` — "1999" → "nineteen ninety-nine", "2024" →
+> "twenty twenty-four", "2000" → "two thousand", "2005" → "twenty oh five". That hunk
+> has been **cherry-picked onto `headless-daemon-mimika`** (this commit). No Core ML
+> model rebuilds, precision fixes, or `MimiEncoder` changes in the gap. Conversion repo
+> still **404 / private** (re-checked 2026-06-18). Recommendation: do **not** merge the
+> rest of the gap — it is pure GUI surface area that would only add conflict noise to
+> the daemon track.
+>
 > **Name collision:** upstream's "Mimika" is John Saunders' rebrand of
 > pocket-tts-macos — a macOS GUI TTS app. It is **unrelated** to the separate PAI
 > **"MimikaStudio"** voice project (Kokoro/MLX telephony clone,
